@@ -40,7 +40,10 @@ parallel_evaluation = true
 [security]
 rate_limit = 100  # requests per minute
 max_request_size = 1048576  # 1MB
-enable_authentication = false
+enable_authentication = true # Set to true to enable API key authentication
+# Add a list of valid API keys. Clients must provide one of these in the X-API-Key header.
+# It is strongly recommended to change these default keys and use secure, randomly generated keys.
+api_keys = ["your-secure-api-key-1", "your-secure-api-key-2"]
 
 # Bridge configuration
 [bridge]

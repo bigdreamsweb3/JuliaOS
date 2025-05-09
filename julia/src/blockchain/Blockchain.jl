@@ -1,685 +1,597 @@
+"""
+Blockchain.jl - Core module for blockchain interactions in JuliaOS.
+
+Provides a unified interface for interacting with various blockchain networks,
+including EVM-compatible chains and others like Solana.
+"""
 module Blockchain
 
-using HTTP
-using JSON
-using Dates
-using Base64
-using Printf # Add Printf for formatting
+using HTTP, JSON3, Dates, Base64, Printf, Logging
 
-# Include submodules
-include("EthereumClient.jl")
-
-# Re-export from submodules
-using .EthereumClient
-
-export connect, getBalance, sendTransaction, getTransactionReceipt, isNodeHealthy
-export getChainId, getGasPrice, getTokenBalance, sendRawTransaction, eth_call
-export getTransactionCount, estimateGas, getDecimals # Added getDecimals export
-export SUPPORTED_CHAINS, getEndpoint
-
-# Export EthereumClient module
-export EthereumClient
-export EthereumConfig, EthereumProvider, create_provider
-export call_contract, send_transaction, get_balance, get_block, get_transaction
-export encode_function_call, decode_function_result, eth_to_wei, wei_to_eth
-
-# Supported blockchain networks
-const SUPPORTED_CHAINS = [
-    "ethereum", "polygon", "solana", "arbitrum", "optimism",
-    "base", "avalanche", "bsc", "fantom"
-]
-
-# Function to get environment variable with fallback
-function getenv(key, default="")
-    return get(ENV, key, default)
+# Include the main application configuration module
+try
+    include("../config/config.jl") # Path from src/blockchain/ to config/
+    MainAppConfig = Config # Alias the loaded Config module
+    @info "Blockchain.jl: Successfully included main application config."
+catch e
+    @error "Blockchain.jl: Failed to include main application config. Will use internal defaults." exception=e
+    # Define a fallback AppConfigModule if main config fails to load
+    module MainAppConfig
+        load() = nothing # Placeholder
+        get_value(cfg, key, default) = default
+    end
 end
 
-# Get RPC endpoint for a chain from environment variables
-function getEndpoint(network)
-    # Convert network name to uppercase for environment variable
-    env_var = "$(uppercase(network))_RPC_URL"
+# Include submodules or specific client implementations
+include("EthereumClient.jl") # Assuming EthereumClient.jl is in the same directory
+include("Wallet.jl")         # Include the new Wallet module
 
-    # Use specific environment variables for certain networks
-    endpoint = if network == "ethereum"
-        getenv("ETHEREUM_RPC_URL", "https://dry-capable-wildflower.quiknode.pro/2c509d168dcf3f71d49a4341f650c4b427be5b30")
-    elseif network == "solana"
-        getenv("SOLANA_RPC_URL", "https://cosmopolitan-restless-sunset.solana-mainnet.quiknode.pro/ca360edea8156bd1629813a9aaabbfceb5cc9d05")
-    elseif network == "base"
-        getenv("BASE_RPC_URL", "https://withered-boldest-waterfall.base-mainnet.quiknode.pro/38ed3b981b066d4bd33984e96f6809e54d6c71b8")
-    elseif network == "arbitrum"
-        getenv("ARBITRUM_RPC_URL", "https://wiser-thrilling-pool.arbitrum-mainnet.quiknode.pro/f7b7ccfade9f3ac53e01aaaff329dd5565239945")
-    elseif network == "avalanche"
-        getenv("AVALANCHE_RPC_URL", "https://green-cosmological-glade.avalanche-mainnet.quiknode.pro/aa5db7aa86b1576f08e44c51054d709f6698d485/ext/bc/C/rpc/")
-    elseif network == "bsc"
-        getenv("BSC_RPC_URL", "https://still-magical-orb.bsc.quiknode.pro/e14cb1f002c159ce0eb678a480698dc2abd7846c")
-    elseif network == "fantom"
-        getenv("FANTOM_RPC_URL", "https://distinguished-icy-meme.fantom.quiknode.pro/69343151a0265c018d02ecfbca4b62a6c011fe1b")
-    elseif network == "polygon"
-        getenv("POLYGON_RPC_URL", "https://polygon-mainnet.infura.io/v3")
-    elseif network == "optimism"
-        getenv("OPTIMISM_RPC_URL", "https://mainnet.optimism.io")
+# Re-export key functionalities from submodules if they are namespaced
+using .EthereumClient 
+using .Wallet         
+# Or, to re-export all of EthereumClient's exports directly into Blockchain namespace:
+# export EthereumClient # This exports the module itself
+# For more granular control:
+# export call_contract, send_transaction # from EthereumClient if you want to re-export them directly
+
+export connect, get_balance, send_transaction_generic, get_transaction_receipt_generic, is_node_healthy_generic
+export get_chain_id_generic, get_gas_price_generic, get_token_balance_generic, send_raw_transaction_generic, eth_call_generic
+export get_transaction_count_generic, estimate_gas_generic, get_decimals_generic
+export SUPPORTED_CHAINS_CONFIG, get_rpc_endpoint, get_chain_name_from_id # Updated exports
+
+# Configuration for supported blockchain networks will be loaded from MainAppConfig
+
+const SUPPORTED_CHAINS_CONFIG = Ref(Dict{String, Dict{String,Any}}()) # To be populated by _load_blockchain_config
+
+function _load_blockchain_config()
+    app_config = MainAppConfig.load() # Load the main application configuration
+    
+    if isnothing(app_config)
+        @error "Blockchain.jl: Main application configuration could not be loaded. Using empty blockchain config."
+        SUPPORTED_CHAINS_CONFIG[] = Dict{String, Dict{String,Any}}()
+        return
+    end
+
+    # Get RPC URLs and supported chains from the loaded application config
+    # The paths like "blockchain.rpc_urls" are based on the structure in julia/config/config.jl's DEFAULT_CONFIG
+    rpc_urls_from_config = MainAppConfig.get_value(app_config, "blockchain.rpc_urls", Dict())
+    supported_chains_list = MainAppConfig.get_value(app_config, "blockchain.supported_chains", []) # List of chain names
+
+    loaded_config = Dict{String, Dict{String,Any}}()
+
+    # Prioritize chains listed in "supported_chains" from config
+    for chain_key_any in supported_chains_list
+        chain_key = lowercase(string(chain_key_any)) # Ensure lowercase string
+        
+        # Get RPC URL: ENV variable > config file's rpc_urls section > hardcoded DEFAULT_RPC_URLS (as last resort)
+        env_var_name = uppercase(chain_key) * "_RPC_URL"
+        rpc_url = get(ENV, env_var_name, get(rpc_urls_from_config, chain_key, get(DEFAULT_RPC_URLS, chain_key, "")))
+
+        if isempty(rpc_url)
+            @warn "No RPC URL found for supported chain: $chain_key (checked ENV.$env_var_name, config.blockchain.rpc_urls.$chain_key, and internal defaults)."
+            continue
+        end
+        
+        # Chain ID mapping (can be expanded or made configurable, or fetched from node if possible)
+        chain_id = if chain_key == "ethereum"; 1
+                     elseif chain_key == "polygon"; 137
+                     elseif chain_key == "arbitrum"; 42161
+                     elseif chain_key == "optimism"; 10
+                     elseif chain_key == "base"; 8453
+                     elseif chain_key == "avalanche"; 43114
+                     elseif chain_key == "bsc"; 56
+                     elseif chain_key == "fantom"; 250
+                     elseif chain_key == "solana"; -1 # Special value for Solana
+                     else; 0 # Unknown or to be fetched
+                     end
+        
+        loaded_config[chain_key] = Dict("rpc_url" => rpc_url, "chain_id" => chain_id, "name" => chain_key)
+    end
+    
+    # Fallback for any chains in DEFAULT_RPC_URLS not covered by supported_chains_list (e.g. if supported_chains is empty)
+    # This ensures some level of default functionality if config is minimal.
+    if isempty(loaded_config) && !isempty(DEFAULT_RPC_URLS)
+        @warn "blockchain.supported_chains list in config was empty or resulted in no valid configurations. Falling back to internal DEFAULT_RPC_URLS."
+        for (chain_key, default_url) in DEFAULT_RPC_URLS
+            if !haskey(loaded_config, chain_key) # Add only if not already processed
+                env_var_name = uppercase(chain_key) * "_RPC_URL"
+                rpc_url = get(ENV, env_var_name, default_url) # ENV still takes precedence over hardcoded default
+                chain_id = if chain_key == "ethereum"; 1 elseif chain_key == "polygon"; 137 elseif chain_key == "solana"; -1 else 0 end # Simplified
+                loaded_config[chain_key] = Dict("rpc_url" => rpc_url, "chain_id" => chain_id, "name" => chain_key)
+            end
+        end
+    end
+
+    SUPPORTED_CHAINS_CONFIG[] = loaded_config
+    @info "Blockchain configuration initialized with $(length(SUPPORTED_CHAINS_CONFIG[])) chains from main application config and environment variables."
+end
+
+# Define DEFAULT_RPC_URLS here as a fallback if config system fails or is minimal
+const DEFAULT_RPC_URLS = Dict(
+    "ethereum" => "https://mainnet.infura.io/v3/YOUR_INFURA_KEY", # User should replace this
+    "polygon"  => "https://polygon-rpc.com",
+    "solana"   => "https://api.mainnet-beta.solana.com"
+    # Add other common defaults if desired
+)
+
+function __init__()
+    _load_blockchain_config() # Load config when module is initialized
+end
+
+function get_rpc_endpoint(network_name_or_id::Union{String, Int})::Union{String, Nothing}
+    configs = SUPPORTED_CHAINS_CONFIG[]
+    if isa(network_name_or_id, String)
+        norm_name = lowercase(network_name_or_id)
+        return haskey(configs, norm_name) ? configs[norm_name]["rpc_url"] : nothing
+    elseif isa(network_name_or_id, Int) # Lookup by chain_id
+        for (name, details) in configs
+            if details["chain_id"] == network_name_or_id
+                return details["rpc_url"]
+            end
+        end
+        return nothing
+    end
+    return nothing
+end
+
+function get_chain_name_from_id(chain_id::Int)::Union{String, Nothing}
+    configs = SUPPORTED_CHAINS_CONFIG[]
+    for (name, details) in configs
+        if details["chain_id"] == chain_id
+            return name
+        end
+    end
+    return nothing
+end
+
+
+"""
+    connect(; network::String="ethereum", endpoint_url::Union{String,Nothing}=nothing)
+
+Establishes and tests a connection to a specified blockchain network.
+Returns a dictionary representing the connection state.
+"""
+function connect(; network::String="ethereum", endpoint_url::Union{String,Nothing}=nothing)
+    norm_network_name = lowercase(network)
+    
+    final_endpoint_url = if !isnothing(endpoint_url)
+        endpoint_url
     else
-        getenv(env_var, "")
+        get_rpc_endpoint(norm_network_name)
     end
 
-    if endpoint == ""
-        @warn "No endpoint provided for $network. Using default or mock endpoint."
-        return "http://localhost:8545"  # Default fallback
+    if isnothing(final_endpoint_url)
+        @error "No RPC endpoint configured or found for network: $norm_network_name."
+        return Dict("network" => norm_network_name, "endpoint" => nothing, "connected" => false, "error" => "RPC endpoint not configured")
     end
 
-    return endpoint
-end
-
-# Connect to a blockchain network
-function connect(; network="ethereum", endpoint="")
-    if !(network in SUPPORTED_CHAINS)
-        @warn "Unsupported network: $network. Supported networks: $(join(SUPPORTED_CHAINS, ", "))"
-    end
-
-    # If no endpoint provided, get from environment
-    if endpoint == ""
-        endpoint = getEndpoint(network)
-    end
-
-    # Test connection
-    is_healthy = try
-        isNodeHealthy(Dict("network" => network, "endpoint" => endpoint))
-    catch e
-        @warn "Failed to connect to $network at $endpoint: $e"
-        false
+    is_healthy = is_node_healthy_generic(norm_network_name, final_endpoint_url)
+    
+    chain_id = -1 # Default for unknown or non-EVM
+    if is_healthy && norm_network_name != "solana" # Solana doesn't have eth_chainId
+        try
+            # Attempt to get chain_id for EVM chains
+            temp_conn_dict = Dict("network" => norm_network_name, "endpoint" => final_endpoint_url, "connected" => true)
+            chain_id = get_chain_id_generic(temp_conn_dict)
+        catch e
+            @warn "Could not fetch chain_id for $norm_network_name via $final_endpoint_url" error=e
+        end
     end
 
     return Dict(
-        "network" => network,
-        "endpoint" => endpoint,
+        "network" => norm_network_name,
+        "endpoint" => final_endpoint_url,
         "connected" => is_healthy,
-        "timestamp" => now()
+        "chain_id_retrieved" => chain_id, # May differ from configured if endpoint is wrong
+        "timestamp" => string(now(UTC))
     )
 end
 
-# Get balance for an address
-function getBalance(address, connection)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
-
-    if !connection["connected"]
-        error("Not connected to network: $network")
-    end
-
+# Generic RPC request helper (primarily for EVM-like JSON-RPC)
+function _make_generic_rpc_request(endpoint_url::String, method::String, params::AbstractArray)
+    request_body = Dict(
+        "jsonrpc" => "2.0",
+        "id" => rand(UInt32),
+        "method" => method,
+        "params" => params
+    )
     try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            # Ethereum-compatible call
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "eth_getBalance",
-                    "params" => [address, "latest"],
-                    "id" => 1
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            if haskey(result, "result")
-                # Convert hex result to decimal
-                hex_result = result["result"]
-                # Remove "0x" prefix and convert to integer
-                balance_wei = parse(BigInt, hex_result[3:end], base=16)
-                # Convert wei to ether (1 ether = 10^18 wei)
-                balance_eth = balance_wei / BigInt(10)^18
-                return balance_eth
-            else
-                error("Failed to get balance: $(get(result, "error", "Unknown error"))")
-            end
-        elseif network == "solana"
-            # Solana-specific call
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "id" => 1,
-                    "method" => "getBalance",
-                    "params" => [address]
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            if haskey(result, "result") && haskey(result["result"], "value")
-                # Solana balance is in lamports (1 SOL = 10^9 lamports)
-                balance_lamports = result["result"]["value"]
-                balance_sol = balance_lamports / 1_000_000_000
-                return balance_sol
-            else
-                error("Failed to get Solana balance: $(get(result, "error", "Unknown error"))")
-            end
-        else
-            error("Unsupported network for balance check: $network")
+        response = HTTP.post(
+            endpoint_url,
+            ["Content-Type" => "application/json"],
+            JSON3.write(request_body);
+            timeout = 20 # Default timeout
+        )
+        response_json = JSON3.read(String(response.body))
+        
+        if haskey(response_json, "error")
+            err_details = response_json.error
+            err_msg = "RPC Error for method $method: $(get(err_details, "message", "Unknown RPC error")) (Code: $(get(err_details, "code", "N/A")))"
+            @error err_msg full_error=err_details
+            error(err_msg) # Throw an error to be caught by calling function
         end
+        return response_json.result
     catch e
-        @warn "Error getting balance: $e"
-        return 0.0
+        @error "Generic RPC request failed for method $method to $endpoint_url" exception=(e, catch_backtrace())
+        rethrow(e) # Propagate the exception
     end
 end
 
-# Get chain ID
-function getChainId(connection)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
+# --- Generic Blockchain Interaction Functions ---
+# These will delegate to chain-specific implementations or use generic JSON-RPC.
 
-    if !connection["connected"]
-        error("Not connected to network: $network")
-    end
-
+function is_node_healthy_generic(network_name::String, endpoint_url::String)::Bool
     try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "eth_chainId",
-                    "params" => [],
-                    "id" => 1
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            if haskey(result, "result")
-                hex_chain_id = result["result"]
-                chain_id = parse(Int, hex_chain_id[3:end], base=16)
-                return chain_id
-            else
-                error("Failed to get chain ID: $(get(result, "error", "Unknown error"))")
-            end
-        elseif network == "solana"
-            # Solana doesn't have a chain ID in the same way as EVM chains
-            # Return 1 for Mainnet, 2 for Testnet
-            return 1
-        else
-            error("Unsupported network for chain ID: $network")
-        end
-    catch e
-        @warn "Error getting chain ID: $e"
-        return 0
-    end
-end
-
-# Get gas price
-function getGasPrice(connection)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
-
-    if !connection["connected"]
-        error("Not connected to network: $network")
-    end
-
-    try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "eth_gasPrice",
-                    "params" => [],
-                    "id" => 1
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            if haskey(result, "result")
-                hex_gas_price = result["result"]
-                gas_price_wei = parse(BigInt, hex_gas_price[3:end], base=16)
-                gas_price_gwei = gas_price_wei / BigInt(10)^9
-                return gas_price_gwei
-            else
-                error("Failed to get gas price: $(get(result, "error", "Unknown error"))")
-            end
-        elseif network == "solana"
-            # For Solana, get recent blockhash and associated fee
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "id" => 1,
-                    "method" => "getFees",
-                    "params" => []
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            if haskey(result, "result") && haskey(result["result"], "feeCalculator")
-                # Extract lamports per signature
-                fee = result["result"]["feeCalculator"]["lamportsPerSignature"]
-                return fee
-            else
-                error("Failed to get Solana fee: $(get(result, "error", "Unknown error"))")
-            end
-        else
-            error("Unsupported network for gas price: $network")
-        end
-    catch e
-        @warn "Error getting gas price: $e"
-        return 0.0
-    end
-end
-
-# Get transaction count (nonce)
-function getTransactionCount(address::String, connection::Dict)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
-    if !connection["connected"]
-        error("Not connected to network: $network for getTransactionCount")
-    end
-
-    try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "eth_getTransactionCount",
-                    "params" => [address, "latest"],
-                    "id" => rand(UInt32)
-                ))
-            )
-            response_body = String(response.body)
-            result = JSON.parse(response_body)
-
-            if haskey(result, "result")
-                nonce_hex = result["result"]
-                return parse(Int, nonce_hex[3:end], base=16)
-            elseif haskey(result, "error")
-                error_details = result["error"]
-                error("eth_getTransactionCount failed: $(get(error_details, "message", "Unknown RPC error"))")
-            else
-                error("eth_getTransactionCount failed with unexpected response: $response_body")
-            end
-        else
-            error("getTransactionCount not supported for network: $network")
-        end
-    catch e
-        @error "Error getting transaction count for $address on $network: $e"
-        rethrow(e)
-    end
-end
-
-# Estimate gas for a transaction (placeholder/basic implementation)
-function estimateGas(tx_params::Dict, connection::Dict)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
-    if !connection["connected"]
-        error("Not connected to network: $network for estimateGas")
-    end
-
-    # Ensure required fields are present (to, from, data, value)
-    if !haskey(tx_params, "to") || !haskey(tx_params, "from")
-         error("Missing required fields 'to' or 'from' for estimateGas")
-     end
-     # Default optional fields if missing
-     tx_call_params = Dict(
-         "from" => tx_params["from"],
-         "to" => tx_params["to"],
-         "gas" => get(tx_params, "gas", nothing), # Usually omitted for estimateGas itself
-         "gasPrice" => get(tx_params, "gasPrice", nothing), # Usually omitted
-         "value" => get(tx_params, "value", "0x0"),
-         "data" => get(tx_params, "data", "0x")
-     )
-
-    try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "eth_estimateGas",
-                    "params" => [tx_call_params],
-                    "id" => rand(UInt32)
-                ))
-            )
-            response_body = String(response.body)
-            result = JSON.parse(response_body)
-
-            if haskey(result, "result")
-                gas_hex = result["result"]
-                # Add a buffer (e.g., 20%) to the estimate
-                estimated_gas = parse(Int, gas_hex[3:end], base=16)
-                buffered_gas = Int(ceil(estimated_gas * 1.2))
-                @info "Gas estimate: $estimated_gas, Buffered: $buffered_gas" tx_params=tx_params
-                return buffered_gas
-            elseif haskey(result, "error")
-                error_details = result["error"]
-                err_msg = get(error_details, "message", "Unknown RPC error")
-                err_data = get(error_details, "data", "N/A")
-                @error "eth_estimateGas failed: $err_msg" details=error_details params=tx_call_params
-                # Provide a high default gas limit as fallback? Or error out?
-                # Erroring out is safer to prevent unexpected high fees.
-                error("eth_estimateGas failed: $err_msg (Data: $err_data)")
-            else
-                error("eth_estimateGas failed with unexpected response: $response_body")
-            end
-        else
-            # Return a high default for unsupported networks? Safer to error.
-            error("estimateGas not supported for network: $network")
-        end
-    catch e
-        @error "Error estimating gas on $network: $e" tx_params=tx_params
-        rethrow(e)
-    end
-end
-
-# Generic eth_call function
-function eth_call(to::String, data::String, connection::Dict)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
-
-    if !connection["connected"]
-        error("Not connected to network: $network for eth_call")
-    end
-
-    # Ensure data starts with 0x
-    if !startswith(data, "0x")
-        data = "0x" * data
-    end
-
-    try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "eth_call",
-                    "params" => [
-                        Dict(
-                            "to" => to,
-                            "data" => data
-                        ),
-                        "latest"
-                    ],
-                    "id" => rand(UInt32) # Use random ID
-                ))
-            )
-
-            response_body = String(response.body)
-            result = JSON.parse(response_body)
-
-            if haskey(result, "result")
-                # Return the raw hex result
-                return result["result"]
-            elseif haskey(result, "error")
-                 error_details = result["error"]
-                 error_msg = "eth_call failed: $(get(error_details, "message", "Unknown RPC error")) (Code: $(get(error_details, "code", "N/A")))"
-                 # Optionally include data in error: $(get(error_details, "data", "N/A"))
-                 error(error_msg)
-            else
-                error("eth_call failed with unexpected response: $response_body")
-            end
-        else
-            error("eth_call is not supported for network: $network")
-        end
-    catch e
-        @error "Error during eth_call to $to on $network: $e" data=data
-        rethrow(e)
-    end
-end
-
-# Get token decimals for an ERC20 token
-function getDecimals(token_address::String, connection::Dict)::Union{Int, Nothing}
-    network = connection["network"]
-    if !connection["connected"]
-        error("Not connected to network: $network for getDecimals")
-    end
-
-    # ERC20 decimals() function signature: 0x313ce567
-    data = "0x313ce567"
-
-    try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            hex_result = eth_call(token_address, data, connection)
-
-            # Check for empty or invalid results
-            if hex_result == "0x" || isempty(hex_result) || length(hex_result) <= 2
-                @warn "getDecimals eth_call returned empty/invalid result for $token_address on $network."
-                return nothing # Indicate failure to get decimals
-            end
-
-            # Convert hex result to integer
-            decimals_val = tryparse(Int, hex_result[3:end], base=16)
-            if isnothing(decimals_val)
-                 @error "Failed to parse decimals result: $hex_result for $token_address on $network"
-                 return nothing
-             end
-            return decimals_val
-        elseif network == "solana"
-            # TODO: Implement SPL token decimals fetching (requires different method)
-            @warn "getDecimals not implemented for Solana SPL tokens yet." token=token_address
-            return nothing
-        else
-            error("getDecimals is not supported for network: $network")
-        end
-    catch e
-        # Log error but return nothing to allow calling code to handle missing decimals
-        @error "Error getting token decimals for $token_address on $network: $e" token=token_address error=e
-        return nothing
-    end
-end
-
-# Get token balance for an address (updated to use getDecimals)
-function getTokenBalance(address, token_address, connection)
-    network = connection["network"]
-
-    if !connection["connected"]
-        error("Not connected to network: $network for getTokenBalance")
-    end
-
-    try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            # ERC20 balanceOf function signature: 0x70a08231
-            padded_address = lpad(address[3:end], 64, '0')
-            data = "0x70a08231" * padded_address
-
-            hex_result = eth_call(token_address, data, connection)
-
-            if hex_result == "0x" || isempty(hex_result)
-                 @warn "getTokenBalance eth_call returned empty result for $token_address, address $address"
-                 return 0.0
-             end
-
-            balance_wei = tryparse(BigInt, hex_result[3:end], base=16)
-            if isnothing(balance_wei)
-                 error("Failed to parse balance result: $hex_result")
-            end
-
-            # Fetch decimals dynamically
-            decimals = getDecimals(token_address, connection)
-            if isnothing(decimals)
-                @warn "Could not determine decimals for token $token_address on $network. Assuming 18 for balance calculation."
-                decimals = 18 # Default fallback
-            end
-
-            balance_token = balance_wei / BigInt(10)^decimals
-            return balance_token
-
-        elseif network == "solana"
-            # TODO: Implement SPL token balance fetching
-            error("Solana token balance not yet implemented")
-        else
-            error("Unsupported network for token balance: $network")
-        end
-    catch e
-        @error "Error getting token balance for $token_address on $network: $e" address=address
-        return 0.0
-    end
-end
-
-# Send a raw transaction
-function sendRawTransaction(tx, connection)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
-
-    if !connection["connected"]
-        error("Not connected to network: $network")
-    end
-
-    try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "eth_sendRawTransaction",
-                    "params" => [tx],
-                    "id" => 1
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            if haskey(result, "result")
-                return result["result"]  # Transaction hash
-            else
-                error("Failed to send transaction: $(get(result, "error", "Unknown error"))")
-            end
-        elseif network == "solana"
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "id" => 1,
-                    "method" => "sendTransaction",
-                    "params" => [tx, Dict("encoding" => "base64")]
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            if haskey(result, "result")
-                return result["result"]  # Transaction signature
-            else
-                error("Failed to send Solana transaction: $(get(result, "error", "Unknown error"))")
-            end
-        else
-            error("Unsupported network: $network")
-        end
-    catch e
-        @warn "Error sending transaction: $e"
-        error("Transaction failed: $e")
-    end
-end
-
-# Send a transaction
-function sendTransaction(tx, connection)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
-
-    if !connection["connected"]
-        error("Not connected to network: $network")
-    end
-
-    # This function assumes the transaction is already signed
-    # In a real implementation, we would handle signing here or elsewhere
-    return sendRawTransaction(tx, connection)
-end
-
-# Get transaction receipt
-function getTransactionReceipt(txHash, connection)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
-
-    if !connection["connected"]
-        error("Not connected to network: $network")
-    end
-
-    try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            # Ethereum-compatible call
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "eth_getTransactionReceipt",
-                    "params" => [txHash],
-                    "id" => 1
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            return get(result, "result", nothing)
-        elseif network == "solana"
-            # Solana-specific call
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "id" => 1,
-                    "method" => "getTransaction",
-                    "params" => [txHash, Dict("encoding" => "json")]
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            return get(result, "result", nothing)
-        else
-            error("Unsupported network: $network")
-        end
-    catch e
-        @warn "Error getting transaction receipt: $e"
-        return nothing
-    end
-end
-
-# Check if the node is healthy
-function isNodeHealthy(connection)
-    network = connection["network"]
-    endpoint = connection["endpoint"]
-
-    try
-        if network in ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc", "avalanche", "fantom"]
-            # Ethereum-compatible health check
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "web3_clientVersion",
-                    "params" => [],
-                    "id" => 1
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            return haskey(result, "result")
-        elseif network == "solana"
+        if network_name == "solana"
             # Solana-specific health check
-            response = HTTP.post(
-                endpoint,
-                ["Content-Type" => "application/json"],
-                JSON.json(Dict(
-                    "jsonrpc" => "2.0",
-                    "id" => 1,
-                    "method" => "getHealth",
-                    "params" => []
-                ))
-            )
-
-            result = JSON.parse(String(response.body))
-            return get(result, "result", "") == "ok"
-        else
-            @warn "Unsupported network for health check: $network"
-            return false
+            result = _make_generic_rpc_request(endpoint_url, "getHealth", [])
+            return result == "ok"
+        else # Assume EVM-compatible
+            result = _make_generic_rpc_request(endpoint_url, "web3_clientVersion", [])
+            return !isnothing(result) && !isempty(result)
         end
     catch e
-        @warn "Health check failed for $network: $e"
+        @warn "Node health check failed for $network_name at $endpoint_url" error=e
         return false
     end
 end
 
-end # module
+function get_chain_id_generic(connection::Dict)::Int
+    # `connection` is the Dict returned by `connect()`
+    if !connection["connected"] error("Not connected to network: $(connection["network"])") end
+    
+    if connection["network"] == "solana"
+        # Solana doesn't have a numeric chain ID in the EVM sense.
+        # Mainnet-beta, Testnet, Devnet are identified by cluster URL or genesis hash.
+        # We can return a conventional value or error.
+        @warn "get_chain_id_generic: Solana does not use numeric chain IDs like EVM chains. Returning conventional -1."
+        return -1 
+    end
+    # Assumes EVM chain
+    hex_chain_id = _make_generic_rpc_request(connection["endpoint"], "eth_chainId", [])
+    return parse(Int, hex_chain_id[3:end], base=16)
+end
+
+
+function get_balance_generic(address::String, connection::Dict)::Float64
+    if !connection["connected"] error("Not connected to network: $(connection["network"])") end
+    network = connection["network"]
+    endpoint = connection["endpoint"]
+
+    try
+        if network == "solana"
+            result = _make_generic_rpc_request(endpoint, "getBalance", [address])
+            balance_lamports = result["value"] # result is Dict("context"=>..., "value"=>...)
+            return balance_lamports / 1_000_000_000 # Lamports to SOL
+        else # Assume EVM
+            hex_result = _make_generic_rpc_request(endpoint, "eth_getBalance", [address, "latest"])
+            balance_wei = parse(BigInt, hex_result[3:end], base=16)
+            return Float64(balance_wei / BigInt(10)^18) # Wei to Ether
+        end
+    catch e
+        @error "Error getting balance for $address on $network" error=e
+        return 0.0 # Fallback
+    end
+end
+
+function get_token_balance_generic(wallet_address::String, token_contract_address::String, connection::Dict)::Float64
+    if !connection["connected"] error("Not connected: $(connection["network"])") end
+    network = connection["network"]
+    endpoint = connection["endpoint"]
+
+    try
+        if network == "solana"
+            # SPL Token Balance for Solana
+            # This requires knowing the token's mint address and the associated token account for the wallet.
+            # A common approach is to use `getTokenAccountsByOwner` then find the one for the mint.
+            # This is a simplified placeholder.
+            @warn "get_token_balance_generic for Solana SPL tokens is a complex placeholder."
+            # params = [wallet_address, Dict("mint" => token_contract_address), Dict("encoding" => "jsonParsed")]
+            # result = _make_generic_rpc_request(endpoint, "getTokenAccountsByOwner", params)
+            # if !isempty(result["value"]) ... parse result ... end
+            return 0.0 # Placeholder
+        else # Assume EVM ERC20
+            # ERC20 balanceOf(address) function signature: 0x70a08231
+            padded_address = lpad(wallet_address[3:end], 64, '0') # Remove 0x and pad
+            data = "0x70a08231" * padded_address
+            
+            hex_balance = eth_call_generic(token_contract_address, data, connection)
+            balance_smallest_unit = parse(BigInt, hex_balance[3:end], base=16)
+            
+            # Get token decimals
+            token_decimals = get_decimals_generic(token_contract_address, connection)
+            return Float64(balance_smallest_unit / BigInt(10)^token_decimals)
+        end
+    catch e
+        @error "Error getting token balance for $wallet_address, token $token_contract_address on $network" error=e
+        return 0.0
+    end
+end
+
+function get_decimals_generic(token_contract_address::String, connection::Dict)::Int
+    if !connection["connected"] error("Not connected: $(connection["network"])") end
+    # ERC20 decimals() function signature: 0x313ce567
+    data = "0x313ce567"
+    hex_result = eth_call_generic(token_contract_address, data, connection)
+    if hex_result == "0x" || isempty(hex_result) || length(hex_result) <=2
+        @warn "get_decimals_generic eth_call returned empty/invalid result for $token_contract_address on $(connection["network"]). Assuming 18."
+        return 18 # Common default, but risky
+    end
+    return parse(Int, hex_result[3:end], base=16)
+end
+
+function eth_call_generic(to_address::String, data::String, connection::Dict)
+    if !connection["connected"] error("Not connected: $(connection["network"])") end
+    if !startswith(data, "0x") data = "0x" * data end
+    
+    params = [Dict("to" => to_address, "data" => data), "latest"]
+    return _make_generic_rpc_request(connection["endpoint"], "eth_call", params)
+end
+
+# --- Placeholders for other generic functions ---
+
+function get_gas_price_generic(connection::Dict)::Float64
+    if !connection["connected"] error("Not connected: $(connection["network"])") end
+    network = connection["network"]
+    endpoint = connection["endpoint"]
+    try
+        if network == "solana"
+            # Solana uses a different fee mechanism (lamports per signature, priority fees)
+            # This is a simplification; real fee estimation is more complex.
+            # getRecentPrioritizationFees can be used for priority fees.
+            # getFees for base fee.
+            result = _make_generic_rpc_request(endpoint, "getFees", [])
+            # Example: result.value.feeCalculator.lamportsPerSignature
+            return get(get(get(result,"value",Dict()),"feeCalculator",Dict()),"lamportsPerSignature", 5000) / 1_000_000_000 # Convert to SOL
+        else # Assume EVM
+            hex_gas_price = _make_generic_rpc_request(endpoint, "eth_gasPrice", [])
+            gas_price_wei = parse(BigInt, hex_gas_price[3:end], base=16)
+            return Float64(gas_price_wei / BigInt(10)^9) # Convert to Gwei
+        end
+    catch e
+        @error "Error getting gas price for $network" error=e
+        return 0.0 # Fallback
+    end
+end
+
+function get_transaction_count_generic(address::String, connection::Dict; block_tag::String="latest")::Int
+    if !connection["connected"] error("Not connected: $(connection["network"])") end
+    network = connection["network"]
+    endpoint = connection["endpoint"]
+    try
+        if network == "solana"
+            # Solana doesn't have a direct nonce concept like EVM.
+            # Transaction ordering is based on recent blockhash and leader schedule.
+            # For some operations, one might query account info for sequence numbers if applicable.
+            @warn "get_transaction_count_generic: Solana does not use EVM-style nonces. Returning 0."
+            return 0 
+        else # Assume EVM
+            hex_nonce = _make_generic_rpc_request(endpoint, "eth_getTransactionCount", [address, block_tag])
+            return parse(Int, hex_nonce[3:end], base=16)
+        end
+    catch e
+        @error "Error getting transaction count for $address on $network" error=e
+        return -1 # Indicate error
+    end
+end
+
+function estimate_gas_generic(tx_params::Dict, connection::Dict)::Int
+    # tx_params for EVM: {"from": "0x...", "to": "0x...", "value": "0x...", "data": "0x..."}
+    if !connection["connected"] error("Not connected: $(connection["network"])") end
+    network = connection["network"]
+    endpoint = connection["endpoint"]
+    try
+        if network == "solana"
+            # Solana gas/fee estimation is different. `getFeeForMessage` is used with a compiled message.
+            # This is a highly simplified placeholder.
+            @warn "estimate_gas_generic for Solana is a placeholder. Real fee estimation is complex."
+            return 5000 # Placeholder compute units * some factor
+        else # Assume EVM
+            # Ensure essential fields for EVM estimateGas
+            if !haskey(tx_params, "to") 
+                error("Missing 'to' field in tx_params for EVM estimateGas")
+            end
+            # 'from' is optional for eth_estimateGas but often good to include if known
+            # 'value' defaults to 0x0 if not present
+            # 'data' defaults to 0x if not present
+            call_obj = Dict{String, String}()
+            for (k,v) in tx_params
+                if k in ["from", "to", "value", "data", "gas", "gasPrice"] # Common fields
+                    call_obj[k] = v
+                end
+            end
+
+            hex_gas_estimate = _make_generic_rpc_request(endpoint, "eth_estimateGas", [call_obj])
+            estimated_gas = parse(Int, hex_gas_estimate[3:end], base=16)
+            # It's common to add a buffer to the estimate
+            return Int(ceil(estimated_gas * 1.2)) 
+        end
+    catch e
+        @error "Error estimating gas on $network" error=e tx_params=tx_params
+        return -1 # Indicate error
+    end
+end
+
+"""
+    send_transaction_generic(unsigned_tx_params::Dict, connection::Dict; 
+                             wallet_chain_type::Symbol, pk_env_var::String="JULIAOS_DEV_PRIVATE_KEY")::String
+
+Constructs (partially, for EVM), signs (using a development wallet), and sends a transaction.
+WARNING: Uses LocalDevWallet which is insecure for production.
+For EVM, `unsigned_tx_params` should contain `to`, `value_eth` (optional), `data` (optional).
+Nonce, gasPrice, gasLimit, chainId are fetched/calculated.
+For Solana, `unsigned_tx_params` must contain `message_bytes` (Vector{UInt8}) of the serialized transaction.
+"""
+function send_transaction_generic(unsigned_tx_params::Dict, connection::Dict; 
+                                  wallet_chain_type::Symbol, 
+                                  pk_env_var::String="JULIAOS_DEV_PRIVATE_KEY")::String
+    if !connection["connected"] 
+        error("Not connected to network: $(connection["network"]) for send_transaction_generic")
+    end
+    
+    # Initialize wallet (this will error if PK ENV var is not set)
+    wallet = Wallet.initialize_wallet(wallet_chain_type, env_var_for_pk=pk_env_var)
+    # initialize_wallet now errors internally if pk_hex is not found, so wallet should not be nothing here if that call succeeds.
+    # However, it can return nothing if chain_type is unsupported.
+    if isnothing(wallet)
+         error("Failed to initialize wallet for $wallet_chain_type (unsupported type or PK ENV var $pk_env_var problem).")
+    end
+    # If wallet.private_key_hex is somehow still nothing despite constructor erroring, this would catch it.
+    # This check is more for robustness if LocalDevWallet logic changes.
+    if isnothing(wallet.private_key_hex) 
+        error("Wallet initialized but private key is missing for $wallet_chain_type using ENV var $pk_env_var.")
+    end
+
+    sender_address = Wallet.get_address(wallet)
+    if isnothing(sender_address) # Should not happen if pk_hex is present due to placeholder derivation
+        error("Could not derive sender address from wallet for $wallet_chain_type.")
+    end
+
+    signed_tx_hex_or_base64 = ""
+    network = connection["network"] # This is the target network for the transaction
+
+    # Ensure wallet chain type matches network type for EVM/Solana
+    if wallet_chain_type == :evm && network == "solana"
+        error("EVM wallet type specified for Solana network. Mismatch.")
+    elseif wallet_chain_type == :solana && network != "solana"
+        error("Solana wallet type specified for non-Solana network $network. Mismatch.")
+    end
+
+    if wallet_chain_type == :evm
+        # --- Prepare EVM transaction parameters ---
+        # Caller MUST provide 'to' address.
+        # 'value_eth' (amount in Ether) and 'data' (hex string) are optional.
+        # Nonce, gasPrice, gasLimit, and chainId will be fetched/calculated.
+        
+        to_address = get(unsigned_tx_params, "to", "")
+        if !isa(to_address, String) || !startswith(to_address, "0x") || length(to_address) != 42
+            error("EVM transaction 'to' address is required and must be a valid hex string (e.g., 0x...). Got: '$to_address'")
+        end
+
+        # Fetch dynamic parameters
+        current_nonce = get_transaction_count_generic(sender_address, connection)
+        current_gas_price_gwei = get_gas_price_generic(connection)
+        
+        # Convert to Wei and hex for the transaction
+        gas_price_wei = BigInt(round(current_gas_price_gwei * 10^9))
+        gas_price_hex = "0x" * string(gas_price_wei, base=16)
+        
+        value_eth_str = string(get(unsigned_tx_params, "value_eth", "0.0"))
+        value_eth = tryparse(Float64, value_eth_str)
+        if isnothing(value_eth) error("'value_eth' must be a number string. Got: $value_eth_str") end
+        value_wei_hex = EthereumClient.eth_to_wei_str(value_eth)
+        
+        data_payload = string(get(unsigned_tx_params, "data", "0x"))
+        if !startswith(data_payload, "0x") data_payload = "0x" * data_payload end
+
+
+        # Estimate gas
+        estimate_params = Dict(
+            "from" => sender_address,
+            "to" => to_address,
+            "value" => value_wei_hex,
+            "data" => data_payload
+        )
+        estimated_gas_val = estimate_gas_generic(estimate_params, connection)
+        if estimated_gas_val == -1 error("Gas estimation failed for transaction.") end
+        gas_limit_hex = "0x" * string(estimated_gas_val, base=16)
+
+        # Chain ID
+        chain_id_val = get(connection, "chain_id_retrieved", -1)
+        if chain_id_val == -1 # Should have been fetched by connect() for EVM
+            retrieved_cid = get_chain_id_generic(connection) # Try again
+            if retrieved_cid == -1 error("Could not determine chainId for EVM transaction on network $network.") end
+            chain_id_val = retrieved_cid
+        end
+
+        evm_tx_to_sign = Dict(
+            "nonce" => current_nonce, # Wallet.sign_transaction_evm expects integer nonce
+            "gasPrice" => gas_price_hex,
+            "gasLimit" => gas_limit_hex,
+            "to" => to_address,
+            "value" => value_wei_hex,
+            "data" => data_payload,
+            "chainId" => chain_id_val 
+        )
+        @info "Signing EVM transaction for $network with params:" params=evm_tx_to_sign
+        signed_tx_hex_or_base64 = Wallet.sign_transaction_evm(wallet, evm_tx_to_sign)
+
+    elseif wallet_chain_type == :solana
+        @warn "Solana transaction construction in send_transaction_generic is a major placeholder."
+        # For Solana, the caller is responsible for constructing the full transaction message bytes.
+        # This typically involves using @solana/web3.js or a similar library on the client-side
+        # to build the transaction, serialize its message, and then pass those bytes.
+        message_bytes = get(unsigned_tx_params, "message_bytes", nothing)
+        if isnothing(message_bytes) || !isa(message_bytes, Vector{UInt8})
+            error("For Solana, 'message_bytes' (Vector{UInt8}) must be provided in tx_params.")
+        end
+        @info "Signing Solana transaction message for $network..."
+        signed_tx_hex_or_base64 = Wallet.sign_transaction_solana(wallet, message_bytes) # This returns base64 signature
+    else
+        error("Unsupported wallet_chain_type for signing: $wallet_chain_type")
+    end
+
+    @info "Sending signed transaction to $network..."
+    return send_raw_transaction_generic(signed_tx_hex_or_base64, connection)
+end
+
+
+function send_raw_transaction_generic(signed_tx_hex::String, connection::Dict)::String
+    if !connection["connected"] error("Not connected: $(connection["network"])") end
+    network = connection["network"]
+    endpoint = connection["endpoint"]
+    try
+        if network == "solana"
+            # For Solana, signed_tx_hex is typically base64 encoded string of the serialized transaction
+            # The RPC method is "sendTransaction"
+            # params: [signed_tx_base64_string, {"encoding": "base64", "skipPreflight": false, "preflightCommitment": "confirmed"}]
+            # This is a placeholder, actual encoding and params might vary.
+            @warn "send_raw_transaction_generic for Solana: Ensure signed_tx_hex is base64 encoded."
+            # Assuming signed_tx_hex is already base64 for Solana
+            tx_hash = _make_generic_rpc_request(endpoint, "sendTransaction", [signed_tx_hex, Dict("encoding"=>"base64")])
+            return tx_hash # Returns transaction signature
+        else # Assume EVM
+            if !startswith(signed_tx_hex, "0x")
+                error("EVM signed transaction hex must start with 0x")
+            end
+            tx_hash = _make_generic_rpc_request(endpoint, "eth_sendRawTransaction", [signed_tx_hex])
+            return tx_hash # Returns transaction hash
+        end
+    catch e
+        @error "Error sending raw transaction on $network" error=e
+        rethrow(e)
+    end
+end
+
+function get_transaction_receipt_generic(tx_hash::String, connection::Dict)::Union{Dict, Nothing}
+    if !connection["connected"] error("Not connected: $(connection["network"])") end
+    network = connection["network"]
+    endpoint = connection["endpoint"]
+    try
+        if network == "solana"
+            # Solana uses "getTransaction" with specific configuration for verbosity
+            # The structure of a Solana receipt (TransactionResponse) is very different from EVM.
+            # params: [tx_hash_string, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}]
+            @warn "get_transaction_receipt_generic for Solana: Response structure differs significantly from EVM."
+            receipt = _make_generic_rpc_request(endpoint, "getTransaction", [tx_hash, "jsonParsed"]) # Or Dict for config
+            return receipt # This will be a complex object
+        else # Assume EVM
+            receipt = _make_generic_rpc_request(endpoint, "eth_getTransactionReceipt", [tx_hash])
+            return receipt # Can be nothing if tx is pending or not found
+        end
+    catch e
+        # If RPC error indicates "not found" or similar, it might be valid for a pending/unknown tx.
+        # For now, log and rethrow. Specific handling might be needed.
+        @error "Error getting transaction receipt for $tx_hash on $network" error=e
+        # Consider returning nothing or a specific error type instead of rethrowing for "not found" cases.
+        if occursin("not found", lowercase(sprint(showerror, e))) # Basic check
+            return nothing
+        end
+        rethrow(e)
+    end
+end
+
+
+@info "Blockchain module (re)loaded with updated generic functions."
+
+end # module Blockchain

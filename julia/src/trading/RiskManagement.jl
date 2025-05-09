@@ -1,7 +1,5 @@
 """
-RiskManagement.jl - Risk management for DeFi trading
-
-This module provides risk management functionality for DeFi trading.
+RiskManagement.jl - Risk management tools for trading strategies in JuliaOS.
 """
 module RiskManagement
 
@@ -9,622 +7,192 @@ export RiskParameters, PositionSizer, StopLossManager, RiskManager
 export calculate_position_size, set_stop_loss, set_take_profit, check_risk_limits
 export calculate_value_at_risk, calculate_expected_shortfall, calculate_kelly_criterion
 
-using Statistics
-using Distributions
+using Statistics, Distributions, Logging
 
 """
     RiskParameters
 
-Structure representing risk management parameters.
-
-# Fields
-- `max_position_size::Float64`: Maximum position size as a percentage of portfolio value
-- `max_drawdown::Float64`: Maximum allowed drawdown as a percentage
-- `max_daily_loss::Float64`: Maximum allowed daily loss as a percentage
-- `max_trade_loss::Float64`: Maximum allowed loss per trade as a percentage
-- `stop_loss_pct::Float64`: Default stop loss percentage
-- `take_profit_pct::Float64`: Default take profit percentage
-- `risk_reward_ratio::Float64`: Minimum risk-reward ratio
-- `confidence_level::Float64`: Confidence level for VaR calculations
-- `kelly_fraction::Float64`: Fraction of Kelly criterion to use
+Parameters defining risk tolerance and rules for a trading strategy or portfolio.
 """
 struct RiskParameters
-    max_position_size::Float64
-    max_drawdown::Float64
-    max_daily_loss::Float64
-    max_trade_loss::Float64
-    stop_loss_pct::Float64
-    take_profit_pct::Float64
-    risk_reward_ratio::Float64
-    confidence_level::Float64
-    kelly_fraction::Float64
-    
-    function RiskParameters(;
-        max_position_size::Float64 = 0.1,  # 10% of portfolio
-        max_drawdown::Float64 = 0.2,       # 20% drawdown
-        max_daily_loss::Float64 = 0.05,    # 5% daily loss
-        max_trade_loss::Float64 = 0.02,    # 2% per trade
-        stop_loss_pct::Float64 = 0.05,     # 5% stop loss
-        take_profit_pct::Float64 = 0.1,    # 10% take profit
-        risk_reward_ratio::Float64 = 2.0,  # 2:1 risk-reward
-        confidence_level::Float64 = 0.95,  # 95% confidence
-        kelly_fraction::Float64 = 0.5      # Half Kelly
+    max_drawdown_percent::Float64    # Maximum acceptable portfolio drawdown (e.g., 20.0 for 20%)
+    max_risk_per_trade_percent::Float64 # Maximum percentage of capital to risk on a single trade (e.g., 2.0 for 2%)
+    max_position_size_percent::Float64 # Maximum percentage of capital for a single position
+    # Add other parameters like VaR limits, leverage constraints, etc.
+
+    function RiskParameters(; 
+        max_drawdown_percent=20.0, 
+        max_risk_per_trade_percent=2.0,
+        max_position_size_percent=10.0
     )
-        # Validate parameters
-        max_position_size > 0.0 || throw(ArgumentError("max_position_size must be positive"))
-        max_position_size <= 1.0 || throw(ArgumentError("max_position_size must be <= 1.0"))
-        
-        max_drawdown > 0.0 || throw(ArgumentError("max_drawdown must be positive"))
-        max_drawdown <= 1.0 || throw(ArgumentError("max_drawdown must be <= 1.0"))
-        
-        max_daily_loss > 0.0 || throw(ArgumentError("max_daily_loss must be positive"))
-        max_daily_loss <= 1.0 || throw(ArgumentError("max_daily_loss must be <= 1.0"))
-        
-        max_trade_loss > 0.0 || throw(ArgumentError("max_trade_loss must be positive"))
-        max_trade_loss <= 1.0 || throw(ArgumentError("max_trade_loss must be <= 1.0"))
-        
-        stop_loss_pct > 0.0 || throw(ArgumentError("stop_loss_pct must be positive"))
-        stop_loss_pct <= 1.0 || throw(ArgumentError("stop_loss_pct must be <= 1.0"))
-        
-        take_profit_pct > 0.0 || throw(ArgumentError("take_profit_pct must be positive"))
-        
-        risk_reward_ratio > 0.0 || throw(ArgumentError("risk_reward_ratio must be positive"))
-        
-        confidence_level > 0.0 || throw(ArgumentError("confidence_level must be positive"))
-        confidence_level < 1.0 || throw(ArgumentError("confidence_level must be < 1.0"))
-        
-        kelly_fraction > 0.0 || throw(ArgumentError("kelly_fraction must be positive"))
-        kelly_fraction <= 1.0 || throw(ArgumentError("kelly_fraction must be <= 1.0"))
-        
-        new(
-            max_position_size,
-            max_drawdown,
-            max_daily_loss,
-            max_trade_loss,
-            stop_loss_pct,
-            take_profit_pct,
-            risk_reward_ratio,
-            confidence_level,
-            kelly_fraction
-        )
+        new(max_drawdown_percent, max_risk_per_trade_percent, max_position_size_percent)
     end
 end
 
 """
     PositionSizer
 
-Structure representing a position sizer.
-
-# Fields
-- `risk_parameters::RiskParameters`: Risk management parameters
-- `portfolio_value::Float64`: Current portfolio value
-- `daily_loss::Float64`: Current daily loss
-- `max_drawdown_value::Float64`: Maximum drawdown value
+Manages calculating appropriate position sizes based on risk parameters and market conditions.
 """
 mutable struct PositionSizer
-    risk_parameters::RiskParameters
-    portfolio_value::Float64
-    daily_loss::Float64
-    max_drawdown_value::Float64
-    
-    function PositionSizer(risk_parameters::RiskParameters, portfolio_value::Float64)
-        portfolio_value > 0.0 || throw(ArgumentError("portfolio_value must be positive"))
-        
-        new(
-            risk_parameters,
-            portfolio_value,
-            0.0,
-            0.0
-        )
+    risk_params::RiskParameters
+    account_balance::Float64
+
+    function PositionSizer(risk_params::RiskParameters, account_balance::Float64)
+        new(risk_params, account_balance)
     end
+end
+
+"""
+    calculate_position_size(sizer::PositionSizer, entry_price::Float64, stop_loss_price::Float64; volatility::Union{Float64,Nothing}=nothing)::Float64
+
+Calculates the position size in units of the asset.
+"""
+function calculate_position_size(sizer::PositionSizer, entry_price::Float64, stop_loss_price::Float64; volatility::Union{Float64,Nothing}=nothing)::Float64
+    if sizer.account_balance <= 0 || entry_price <= 0 || stop_loss_price <= 0
+        @warn "Invalid inputs for position sizing (balance, entry, or stop-loss is non-positive)."
+        return 0.0
+    end
+    
+    risk_per_share = abs(entry_price - stop_loss_price)
+    if risk_per_share == 0
+        @warn "Stop-loss price cannot be the same as entry price for position sizing."
+        return 0.0 # Avoid division by zero
+    end
+
+    # Max capital to risk on this trade
+    capital_at_risk = sizer.account_balance * (sizer.risk_params.max_risk_per_trade_percent / 100.0)
+    
+    # Number of shares/units based on risk per trade
+    num_shares_by_risk = capital_at_risk / risk_per_share
+    
+    # Max capital for this position
+    max_capital_for_position = sizer.account_balance * (sizer.risk_params.max_position_size_percent / 100.0)
+    num_shares_by_position_limit = max_capital_for_position / entry_price
+
+    # Use the more conservative of the two
+    position_size_units = min(num_shares_by_risk, num_shares_by_position_limit)
+    
+    @info "Calculated position size: $position_size_units units. Capital at risk: \$$capital_at_risk. Max position capital: \$$max_capital_for_position."
+    return position_size_units
 end
 
 """
     StopLossManager
 
-Structure representing a stop loss manager.
-
-# Fields
-- `risk_parameters::RiskParameters`: Risk management parameters
-- `positions::Dict{String, Dict{String, Any}}`: Current positions with stop loss and take profit levels
+Manages stop-loss and take-profit levels for open positions.
 """
 mutable struct StopLossManager
-    risk_parameters::RiskParameters
-    positions::Dict{String, Dict{String, Any}}
-    
-    function StopLossManager(risk_parameters::RiskParameters)
-        new(
-            risk_parameters,
-            Dict{String, Dict{String, Any}}()
-        )
+    # Could store active stop-loss/take-profit orders or levels here
+    active_stops::Dict{String, Dict{String, Float64}} # e.g. position_id => {"stop_loss"=>price, "take_profit"=>price}
+
+    function StopLossManager()
+        new(Dict{String, Dict{String, Float64}}())
     end
 end
+
+function set_stop_loss(manager::StopLossManager, position_id::String, stop_price::Float64)
+    if !haskey(manager.active_stops, position_id)
+        manager.active_stops[position_id] = Dict{String, Float64}()
+    end
+    manager.active_stops[position_id]["stop_loss"] = stop_price
+    @info "Stop-loss for position $position_id set to $stop_price."
+end
+
+function set_take_profit(manager::StopLossManager, position_id::String, profit_price::Float64)
+     if !haskey(manager.active_stops, position_id)
+        manager.active_stops[position_id] = Dict{String, Float64}()
+    end
+    manager.active_stops[position_id]["take_profit"] = profit_price
+    @info "Take-profit for position $position_id set to $profit_price."
+end
+
 
 """
     RiskManager
 
-Structure representing a risk manager.
-
-# Fields
-- `risk_parameters::RiskParameters`: Risk management parameters
-- `position_sizer::PositionSizer`: Position sizer
-- `stop_loss_manager::StopLossManager`: Stop loss manager
-- `historical_returns::Vector{Float64}`: Historical returns for VaR calculations
+Overall risk management component for a trading agent or system.
 """
 mutable struct RiskManager
-    risk_parameters::RiskParameters
+    params::RiskParameters
     position_sizer::PositionSizer
     stop_loss_manager::StopLossManager
-    historical_returns::Vector{Float64}
-    
-    function RiskManager(
-        risk_parameters::RiskParameters,
-        portfolio_value::Float64,
-        historical_returns::Vector{Float64} = Float64[]
-    )
-        new(
-            risk_parameters,
-            PositionSizer(risk_parameters, portfolio_value),
-            StopLossManager(risk_parameters),
-            historical_returns
-        )
-    end
-end
+    current_portfolio_value::Float64
+    initial_portfolio_value::Float64 # To calculate drawdown
 
-# ===== Position Sizing Functions =====
-
-"""
-    calculate_position_size(position_sizer::PositionSizer, entry_price::Float64, stop_loss_price::Float64)
-
-Calculate the position size based on risk parameters.
-
-# Arguments
-- `position_sizer::PositionSizer`: The position sizer
-- `entry_price::Float64`: The entry price
-- `stop_loss_price::Float64`: The stop loss price
-
-# Returns
-- `Float64`: The position size in base currency
-"""
-function calculate_position_size(position_sizer::PositionSizer, entry_price::Float64, stop_loss_price::Float64)
-    # Calculate risk per trade in currency units
-    risk_per_trade = position_sizer.portfolio_value * position_sizer.risk_parameters.max_trade_loss
-    
-    # Calculate risk per unit
-    risk_per_unit = abs(entry_price - stop_loss_price)
-    
-    # Calculate position size
-    position_size = risk_per_trade / risk_per_unit
-    
-    # Apply maximum position size constraint
-    max_position = position_sizer.portfolio_value * position_sizer.risk_parameters.max_position_size / entry_price
-    position_size = min(position_size, max_position)
-    
-    return position_size
-end
-
-"""
-    calculate_position_size_kelly(position_sizer::PositionSizer, win_probability::Float64, 
-                                win_loss_ratio::Float64)
-
-Calculate the position size using the Kelly criterion.
-
-# Arguments
-- `position_sizer::PositionSizer`: The position sizer
-- `win_probability::Float64`: The probability of winning
-- `win_loss_ratio::Float64`: The ratio of average win to average loss
-
-# Returns
-- `Float64`: The position size as a fraction of the portfolio
-"""
-function calculate_position_size_kelly(position_sizer::PositionSizer, win_probability::Float64, 
-                                     win_loss_ratio::Float64)
-    # Calculate Kelly fraction
-    kelly = win_probability - (1.0 - win_probability) / win_loss_ratio
-    
-    # Apply Kelly fraction and ensure it's positive
-    kelly = max(0.0, kelly) * position_sizer.risk_parameters.kelly_fraction
-    
-    # Apply maximum position size constraint
-    kelly = min(kelly, position_sizer.risk_parameters.max_position_size)
-    
-    return kelly
-end
-
-"""
-    update_portfolio_value(position_sizer::PositionSizer, new_value::Float64)
-
-Update the portfolio value and track drawdown.
-
-# Arguments
-- `position_sizer::PositionSizer`: The position sizer
-- `new_value::Float64`: The new portfolio value
-
-# Returns
-- `Float64`: The current drawdown as a percentage
-"""
-function update_portfolio_value(position_sizer::PositionSizer, new_value::Float64)
-    # Calculate daily P&L
-    daily_pnl = new_value - position_sizer.portfolio_value
-    
-    # Update daily loss if negative
-    if daily_pnl < 0
-        position_sizer.daily_loss += abs(daily_pnl)
-    end
-    
-    # Update portfolio value
-    old_value = position_sizer.portfolio_value
-    position_sizer.portfolio_value = new_value
-    
-    # Update max drawdown
-    if new_value < old_value
-        drawdown = (old_value - new_value) / old_value
-        position_sizer.max_drawdown_value = max(position_sizer.max_drawdown_value, drawdown)
-        return drawdown
-    end
-    
-    return 0.0
-end
-
-"""
-    reset_daily_loss(position_sizer::PositionSizer)
-
-Reset the daily loss counter.
-
-# Arguments
-- `position_sizer::PositionSizer`: The position sizer
-"""
-function reset_daily_loss(position_sizer::PositionSizer)
-    position_sizer.daily_loss = 0.0
-end
-
-# ===== Stop Loss Functions =====
-
-"""
-    set_stop_loss(stop_loss_manager::StopLossManager, position_id::String, entry_price::Float64;
-                stop_loss_pct::Union{Float64, Nothing}=nothing, stop_loss_price::Union{Float64, Nothing}=nothing)
-
-Set a stop loss for a position.
-
-# Arguments
-- `stop_loss_manager::StopLossManager`: The stop loss manager
-- `position_id::String`: The position ID
-- `entry_price::Float64`: The entry price
-- `stop_loss_pct::Union{Float64, Nothing}`: The stop loss percentage (optional)
-- `stop_loss_price::Union{Float64, Nothing}`: The stop loss price (optional)
-
-# Returns
-- `Float64`: The stop loss price
-"""
-function set_stop_loss(stop_loss_manager::StopLossManager, position_id::String, entry_price::Float64;
-                     stop_loss_pct::Union{Float64, Nothing}=nothing, stop_loss_price::Union{Float64, Nothing}=nothing)
-    # Use provided stop loss percentage or default
-    sl_pct = stop_loss_pct === nothing ? stop_loss_manager.risk_parameters.stop_loss_pct : stop_loss_pct
-    
-    # Calculate stop loss price if not provided
-    sl_price = stop_loss_price
-    if sl_price === nothing
-        sl_price = entry_price * (1.0 - sl_pct)
-    end
-    
-    # Create or update position
-    if !haskey(stop_loss_manager.positions, position_id)
-        stop_loss_manager.positions[position_id] = Dict{String, Any}()
-    end
-    
-    stop_loss_manager.positions[position_id]["entry_price"] = entry_price
-    stop_loss_manager.positions[position_id]["stop_loss_price"] = sl_price
-    
-    return sl_price
-end
-
-"""
-    set_take_profit(stop_loss_manager::StopLossManager, position_id::String, entry_price::Float64;
-                  take_profit_pct::Union{Float64, Nothing}=nothing, take_profit_price::Union{Float64, Nothing}=nothing)
-
-Set a take profit for a position.
-
-# Arguments
-- `stop_loss_manager::StopLossManager`: The stop loss manager
-- `position_id::String`: The position ID
-- `entry_price::Float64`: The entry price
-- `take_profit_pct::Union{Float64, Nothing}`: The take profit percentage (optional)
-- `take_profit_price::Union{Float64, Nothing}`: The take profit price (optional)
-
-# Returns
-- `Float64`: The take profit price
-"""
-function set_take_profit(stop_loss_manager::StopLossManager, position_id::String, entry_price::Float64;
-                       take_profit_pct::Union{Float64, Nothing}=nothing, take_profit_price::Union{Float64, Nothing}=nothing)
-    # Use provided take profit percentage or default
-    tp_pct = take_profit_pct === nothing ? stop_loss_manager.risk_parameters.take_profit_pct : take_profit_pct
-    
-    # Calculate take profit price if not provided
-    tp_price = take_profit_price
-    if tp_price === nothing
-        tp_price = entry_price * (1.0 + tp_pct)
-    end
-    
-    # Create or update position
-    if !haskey(stop_loss_manager.positions, position_id)
-        stop_loss_manager.positions[position_id] = Dict{String, Any}()
-    end
-    
-    stop_loss_manager.positions[position_id]["entry_price"] = entry_price
-    stop_loss_manager.positions[position_id]["take_profit_price"] = tp_price
-    
-    return tp_price
-end
-
-"""
-    check_stop_loss(stop_loss_manager::StopLossManager, position_id::String, current_price::Float64)
-
-Check if a stop loss has been triggered.
-
-# Arguments
-- `stop_loss_manager::StopLossManager`: The stop loss manager
-- `position_id::String`: The position ID
-- `current_price::Float64`: The current price
-
-# Returns
-- `Bool`: Whether the stop loss has been triggered
-"""
-function check_stop_loss(stop_loss_manager::StopLossManager, position_id::String, current_price::Float64)
-    if !haskey(stop_loss_manager.positions, position_id)
-        return false
-    end
-    
-    position = stop_loss_manager.positions[position_id]
-    
-    if !haskey(position, "stop_loss_price")
-        return false
-    end
-    
-    return current_price <= position["stop_loss_price"]
-end
-
-"""
-    check_take_profit(stop_loss_manager::StopLossManager, position_id::String, current_price::Float64)
-
-Check if a take profit has been triggered.
-
-# Arguments
-- `stop_loss_manager::StopLossManager`: The stop loss manager
-- `position_id::String`: The position ID
-- `current_price::Float64`: The current price
-
-# Returns
-- `Bool`: Whether the take profit has been triggered
-"""
-function check_take_profit(stop_loss_manager::StopLossManager, position_id::String, current_price::Float64)
-    if !haskey(stop_loss_manager.positions, position_id)
-        return false
-    end
-    
-    position = stop_loss_manager.positions[position_id]
-    
-    if !haskey(position, "take_profit_price")
-        return false
-    end
-    
-    return current_price >= position["take_profit_price"]
-end
-
-"""
-    remove_position(stop_loss_manager::StopLossManager, position_id::String)
-
-Remove a position from the stop loss manager.
-
-# Arguments
-- `stop_loss_manager::StopLossManager`: The stop loss manager
-- `position_id::String`: The position ID
-"""
-function remove_position(stop_loss_manager::StopLossManager, position_id::String)
-    if haskey(stop_loss_manager.positions, position_id)
-        delete!(stop_loss_manager.positions, position_id)
-    end
-end
-
-# ===== Risk Management Functions =====
-
-"""
-    check_risk_limits(risk_manager::RiskManager, new_position_size::Float64, entry_price::Float64)
-
-Check if a new position would violate risk limits.
-
-# Arguments
-- `risk_manager::RiskManager`: The risk manager
-- `new_position_size::Float64`: The new position size
-- `entry_price::Float64`: The entry price
-
-# Returns
-- `Tuple{Bool, String}`: Whether the position is allowed and a message
-"""
-function check_risk_limits(risk_manager::RiskManager, new_position_size::Float64, entry_price::Float64)
-    # Check maximum position size
-    position_value = new_position_size * entry_price
-    max_position_value = risk_manager.position_sizer.portfolio_value * risk_manager.risk_parameters.max_position_size
-    
-    if position_value > max_position_value
-        return (false, "Position size exceeds maximum allowed")
-    end
-    
-    # Check daily loss limit
-    daily_loss_limit = risk_manager.position_sizer.portfolio_value * risk_manager.risk_parameters.max_daily_loss
-    
-    if risk_manager.position_sizer.daily_loss >= daily_loss_limit
-        return (false, "Daily loss limit reached")
-    end
-    
-    # Check drawdown limit
-    if risk_manager.position_sizer.max_drawdown_value >= risk_manager.risk_parameters.max_drawdown
-        return (false, "Maximum drawdown reached")
-    end
-    
-    return (true, "Position allowed")
-end
-
-"""
-    calculate_value_at_risk(risk_manager::RiskManager, position_value::Float64;
-                          time_horizon::Int=1, method::Symbol=:parametric)
-
-Calculate the Value at Risk (VaR) for a position.
-
-# Arguments
-- `risk_manager::RiskManager`: The risk manager
-- `position_value::Float64`: The position value
-- `time_horizon::Int`: The time horizon in days
-- `method::Symbol`: The VaR calculation method (:parametric, :historical, or :monte_carlo)
-
-# Returns
-- `Float64`: The Value at Risk
-"""
-function calculate_value_at_risk(risk_manager::RiskManager, position_value::Float64;
-                               time_horizon::Int=1, method::Symbol=:parametric)
-    if isempty(risk_manager.historical_returns)
-        error("Historical returns are required for VaR calculation")
-    end
-    
-    # Calculate VaR based on the specified method
-    if method == :parametric
-        # Parametric VaR (assumes normal distribution)
-        μ = mean(risk_manager.historical_returns)
-        σ = std(risk_manager.historical_returns)
-        
-        # Calculate the z-score for the confidence level
-        z = quantile(Normal(), 1.0 - risk_manager.risk_parameters.confidence_level)
-        
-        # Calculate VaR
-        var = position_value * (μ * time_horizon + z * σ * sqrt(time_horizon))
-        
-        return abs(var)
-    elseif method == :historical
-        # Historical VaR
-        sorted_returns = sort(risk_manager.historical_returns)
-        index = Int(floor((1.0 - risk_manager.risk_parameters.confidence_level) * length(sorted_returns)))
-        index = max(1, index)
-        
-        # Calculate VaR
-        var = position_value * abs(sorted_returns[index]) * sqrt(time_horizon)
-        
-        return var
-    elseif method == :monte_carlo
-        # Monte Carlo VaR
-        μ = mean(risk_manager.historical_returns)
-        σ = std(risk_manager.historical_returns)
-        
-        # Generate random returns
-        n_simulations = 10000
-        random_returns = rand(Normal(μ, σ), n_simulations)
-        
-        # Calculate simulated values
-        simulated_values = position_value .* (1.0 .+ random_returns .* sqrt(time_horizon))
-        
-        # Calculate VaR
-        sorted_values = sort(simulated_values)
-        index = Int(floor((1.0 - risk_manager.risk_parameters.confidence_level) * n_simulations))
-        index = max(1, index)
-        
-        var = position_value - sorted_values[index]
-        
-        return var
-    else
-        error("Unsupported VaR method: $method")
+    function RiskManager(params::RiskParameters, initial_portfolio_value::Float64)
+        sizer = PositionSizer(params, initial_portfolio_value)
+        sl_manager = StopLossManager()
+        new(params, sizer, sl_manager, initial_portfolio_value, initial_portfolio_value)
     end
 end
 
 """
-    calculate_expected_shortfall(risk_manager::RiskManager, position_value::Float64;
-                               time_horizon::Int=1, method::Symbol=:parametric)
+    check_risk_limits(manager::RiskManager, current_price_or_value::Float64)::Bool
 
-Calculate the Expected Shortfall (ES) for a position.
-
-# Arguments
-- `risk_manager::RiskManager`: The risk manager
-- `position_value::Float64`: The position value
-- `time_horizon::Int`: The time horizon in days
-- `method::Symbol`: The ES calculation method (:parametric, :historical, or :monte_carlo)
-
-# Returns
-- `Float64`: The Expected Shortfall
+Checks if current portfolio status violates any risk limits (e.g., max drawdown).
+This is a simplified check. Real drawdown tracking is more complex.
 """
-function calculate_expected_shortfall(risk_manager::RiskManager, position_value::Float64;
-                                    time_horizon::Int=1, method::Symbol=:parametric)
-    if isempty(risk_manager.historical_returns)
-        error("Historical returns are required for ES calculation")
+function check_risk_limits(manager::RiskManager, current_portfolio_value::Float64)::Bool
+    manager.current_portfolio_value = current_portfolio_value # Update current value
+    
+    # Check max drawdown
+    current_drawdown_percent = ((manager.initial_portfolio_value - manager.current_portfolio_value) / manager.initial_portfolio_value) * 100
+    if current_drawdown_percent > manager.params.max_drawdown_percent
+        @warn "Max drawdown limit exceeded! Current: $(current_drawdown_percent)%, Limit: $(manager.params.max_drawdown_percent)%."
+        return false # Risk limit violated
     end
     
-    # Calculate ES based on the specified method
-    if method == :parametric
-        # Parametric ES (assumes normal distribution)
-        μ = mean(risk_manager.historical_returns)
-        σ = std(risk_manager.historical_returns)
-        
-        # Calculate the z-score for the confidence level
-        z = quantile(Normal(), 1.0 - risk_manager.risk_parameters.confidence_level)
-        
-        # Calculate ES
-        es = position_value * (μ * time_horizon + σ * pdf(Normal(), z) / (1.0 - risk_manager.risk_parameters.confidence_level) * sqrt(time_horizon))
-        
-        return abs(es)
-    elseif method == :historical
-        # Historical ES
-        sorted_returns = sort(risk_manager.historical_returns)
-        index = Int(floor((1.0 - risk_manager.risk_parameters.confidence_level) * length(sorted_returns)))
-        index = max(1, index)
-        
-        # Calculate ES as the average of returns beyond VaR
-        tail_returns = sorted_returns[1:index]
-        es = position_value * abs(mean(tail_returns)) * sqrt(time_horizon)
-        
-        return es
-    elseif method == :monte_carlo
-        # Monte Carlo ES
-        μ = mean(risk_manager.historical_returns)
-        σ = std(risk_manager.historical_returns)
-        
-        # Generate random returns
-        n_simulations = 10000
-        random_returns = rand(Normal(μ, σ), n_simulations)
-        
-        # Calculate simulated values
-        simulated_values = position_value .* (1.0 .+ random_returns .* sqrt(time_horizon))
-        
-        # Calculate ES
-        sorted_values = sort(simulated_values)
-        index = Int(floor((1.0 - risk_manager.risk_parameters.confidence_level) * n_simulations))
-        index = max(1, index)
-        
-        tail_values = sorted_values[1:index]
-        es = position_value - mean(tail_values)
-        
-        return es
-    else
-        error("Unsupported ES method: $method")
-    end
+    # TODO: Add other checks (e.g., overall portfolio VaR, concentration limits)
+    return true # All checks passed
+end
+
+
+# --- Advanced Risk Metrics (Placeholders/Simplified) ---
+
+"""
+    calculate_value_at_risk(returns::Vector{Float64}, confidence_level::Float64=0.95)::Float64
+
+Calculates Value at Risk (VaR) using historical simulation (simplified).
+`returns` are typically daily percentage returns (e.g., 0.01 for 1%).
+"""
+function calculate_value_at_risk(returns::Vector{Float64}, confidence_level::Float64=0.95)::Float64
+    isempty(returns) && return 0.0
+    sorted_returns = sort(returns)
+    index = ceil(Int, (1.0 - confidence_level) * length(sorted_returns))
+    index = max(1, min(index, length(sorted_returns))) # Ensure index is valid
+    var_value = sorted_returns[index] 
+    return abs(var_value) # VaR is typically reported as a positive loss value
 end
 
 """
-    calculate_kelly_criterion(risk_manager::RiskManager, win_probability::Float64, win_loss_ratio::Float64)
+    calculate_expected_shortfall(returns::Vector{Float64}, confidence_level::Float64=0.95)::Float64
 
-Calculate the Kelly criterion for a betting scenario.
-
-# Arguments
-- `risk_manager::RiskManager`: The risk manager
-- `win_probability::Float64`: The probability of winning
-- `win_loss_ratio::Float64`: The ratio of average win to average loss
-
-# Returns
-- `Float64`: The Kelly criterion
+Calculates Conditional Value at Risk (CVaR) or Expected Shortfall.
 """
-function calculate_kelly_criterion(risk_manager::RiskManager, win_probability::Float64, win_loss_ratio::Float64)
-    # Calculate Kelly fraction
-    kelly = win_probability - (1.0 - win_probability) / win_loss_ratio
-    
-    # Apply Kelly fraction and ensure it's positive
-    kelly = max(0.0, kelly) * risk_manager.risk_parameters.kelly_fraction
-    
-    return kelly
+function calculate_expected_shortfall(returns::Vector{Float64}, confidence_level::Float64=0.95)::Float64
+    isempty(returns) && return 0.0
+    var_threshold = -calculate_value_at_risk(returns, confidence_level) # VaR as a negative return
+    tail_losses = filter(r -> r <= var_threshold, returns)
+    return isempty(tail_losses) ? 0.0 : abs(mean(tail_losses))
 end
 
-end # module
+"""
+    calculate_kelly_criterion(win_probability::Float64, avg_win_loss_ratio::Float64)::Float64
+
+Calculates the Kelly Criterion for bet sizing.
+`avg_win_loss_ratio` = (average gain from a win) / (average loss from a loss), both positive.
+"""
+function calculate_kelly_criterion(win_probability::Float64, avg_win_loss_ratio::Float64)::Float64
+    if !(0 <= win_probability <= 1) || avg_win_loss_ratio <= 0
+        @warn "Invalid inputs for Kelly Criterion."
+        return 0.0
+    end
+    # Kelly fraction = W - ( (1-W) / R )
+    # W = win_probability
+    # R = avg_win_loss_ratio
+    kelly_fraction = win_probability - ((1 - win_probability) / avg_win_loss_ratio)
+    return max(0.0, kelly_fraction) # Bet size cannot be negative
+end
+
+end # module RiskManagement

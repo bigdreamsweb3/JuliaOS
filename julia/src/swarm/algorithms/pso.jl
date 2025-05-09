@@ -1,194 +1,201 @@
-module PSO
-
-export ParticleSwarmOptimization, optimize
-
-using Random
-using Statistics
-using ..SwarmBase
-
 """
-    ParticleSwarmOptimization <: AbstractSwarmAlgorithm
-
-Particle Swarm Optimization algorithm.
-
-# Fields
-- `swarm_size::Int`: Number of particles in the swarm
-- `max_iterations::Int`: Maximum number of iterations
-- `c1::Float64`: Cognitive coefficient
-- `c2::Float64`: Social coefficient
-- `w::Float64`: Inertia weight
-- `w_damp::Float64`: Inertia weight damping ratio
+PSO.jl - Placeholder for Particle Swarm Optimization Algorithm
 """
-struct ParticleSwarmOptimization <: AbstractSwarmAlgorithm
-    swarm_size::Int
-    max_iterations::Int
-    c1::Float64
-    c2::Float64
-    w::Float64
-    w_damp::Float64
+module PSOAlgorithmImpl # Using a more specific module name
 
-    function ParticleSwarmOptimization(;
-        swarm_size::Int = 50,
-        max_iterations::Int = 100,
-        c1::Float64 = 2.0,
-        c2::Float64 = 2.0,
-        w::Float64 = 0.9,
-        w_damp::Float64 = 0.99
-    )
-        # Parameter validation
-        swarm_size > 0 || throw(ArgumentError("Swarm size must be positive"))
-        max_iterations > 0 || throw(ArgumentError("Maximum iterations must be positive"))
-        c1 >= 0.0 || throw(ArgumentError("c1 must be non-negative"))
-        c2 >= 0.0 || throw(ArgumentError("c2 must be non-negative"))
-        w >= 0.0 || throw(ArgumentError("w must be non-negative"))
-        0.0 <= w_damp <= 1.0 || throw(ArgumentError("w_damp must be in [0, 1]"))
+using Logging
+# This will need access to SwarmBase types.
+# Assuming SwarmBase.jl is in the parent directory (../SwarmBase.jl)
+# or that types are re-exported by a higher-level module.
+# For direct relative import if SwarmBase is in `julia/src/swarm/`
+try
+    using ...swarm.SwarmBase # Relative path from algorithms/ to swarm/
+    # Or if SwarmBase is directly in src: using ..SwarmBase
+    # This depends on how Swarms.jl includes SwarmBase.jl
+    # Let's assume SwarmBase is accessible via the framework or a common parent.
+    # For now, to ensure it compiles if run standalone for testing:
+    # include("../SwarmBase.jl") # This is not ideal for module structure
+    # using .SwarmBase
+    # Correct approach: Swarms.jl includes SwarmBase.jl, and this file is included by Swarms.jl
+    # or SwarmBase is a registered package/module.
+    # For now, assuming SwarmBase types are available in the scope where this module is used.
+    # If this file is `include`d by `Swarms.jl`, and `Swarms.jl` does `using .SwarmBase`, then it's fine.
+    # Let's assume the types are available via `Main.JuliaOSFramework.SwarmBase` or similar.
+    # For the purpose of this file, we'll assume SwarmBase is directly usable.
+    # This will be resolved when _instantiate_algorithm loads it.
+    # For now, to make it self-contained for thought:
+    # This is a common issue with structuring Julia projects with sub-modules.
+    # The `using ..SwarmBase` would be correct if `algorithms` is a sub-module of `swarm`.
+    # If `Swarms.jl` does `include("algorithms/PSO.jl")`, then `SwarmBase` types are in its scope.
+    # Let's write it assuming it's included by Swarms.jl which has `using .SwarmBase`.
+    # So, SwarmBase.AbstractSwarmAlgorithm should be accessible.
+    # No, this module will be `using`d by Swarms.jl, so it needs its own `using`.
+    # The path from `julia/src/swarm/algorithms/PSO.jl` to `julia/src/swarm/SwarmBase.jl` is `../SwarmBase.jl`.
+    # So, `using ..SwarmBase` if `algorithms` is a submodule of `swarm`.
+    # If `algorithms` is a sibling of `swarm` under `src`, then `using ..swarm.SwarmBase`.
+    # Given the current structure, `algorithms` will be a subdirectory of `swarm`.
+    using ..SwarmBase # Correct if PSO.jl is in swarm/algorithms/ and SwarmBase.jl is in swarm/
+    
+catch e
+    @warn "PSOAlgorithmImpl: Could not load SwarmBase. Using minimal stubs."
+    abstract type AbstractSwarmAlgorithm end
+    struct OptimizationProblem end
+    struct SwarmSolution end
+end
 
-        new(swarm_size, max_iterations, c1, c2, w, w_damp)
+
+export PSOAlgorithm # Export the algorithm type
+
+mutable struct Particle
+    position::Vector{Float64}
+    velocity::Vector{Float64}
+    best_position::Vector{Float64}
+    best_fitness::Float64
+    current_fitness::Float64
+
+    Particle(dims::Int) = new(zeros(dims), zeros(dims), zeros(dims), Inf, Inf)
+end
+
+mutable struct PSOAlgorithm <: AbstractSwarmAlgorithm
+    num_particles::Int
+    inertia_weight::Float64
+    cognitive_coeff::Float64 # c1
+    social_coeff::Float64    # c2
+    particles::Vector{Particle}
+    global_best_position::Vector{Float64}
+    global_best_fitness::Float64
+    problem_ref::Union{OptimizationProblem, Nothing} # Keep a reference
+
+    function PSOAlgorithm(; num_particles::Int=30, inertia::Float64=0.7, c1::Float64=1.5, c2::Float64=1.5)
+        new(num_particles, inertia, c1, c2, [], [], [], Inf, nothing)
     end
 end
 
-"""
-    optimize(problem::OptimizationProblem, algorithm::ParticleSwarmOptimization)
+function SwarmBase.initialize!(alg::PSOAlgorithm, problem::OptimizationProblem, agents::Vector{String}, config_params::Dict)
+    alg.problem_ref = problem
+    alg.particles = [Particle(problem.dimensions) for _ in 1:alg.num_particles]
+    alg.global_best_position = zeros(problem.dimensions)
+    alg.global_best_fitness = problem.is_minimization ? Inf : -Inf
 
-Optimize the given problem using Particle Swarm Optimization.
-
-# Arguments
-- `problem::OptimizationProblem`: The optimization problem to solve
-- `algorithm::ParticleSwarmOptimization`: The PSO algorithm configuration
-
-# Returns
-- `OptimizationResult`: The optimization result containing the best solution found
-"""
-function optimize(problem::OptimizationProblem, algorithm::ParticleSwarmOptimization; callback=nothing)
-    # Initialize parameters
-    n_particles = algorithm.swarm_size
-    max_iter = algorithm.max_iterations
-    c1 = algorithm.c1
-    c2 = algorithm.c2
-    w = algorithm.w
-    w_damp = algorithm.w_damp
-    dim = problem.dimensions
-    bounds = problem.bounds
-    obj_func = problem.objective_function
-    is_min = problem.is_minimization
-
-    # Initialize particles
-    positions = zeros(n_particles, dim)
-    velocities = zeros(n_particles, dim)
-    personal_best_positions = zeros(n_particles, dim)
-    personal_best_fitness = fill(is_min ? Inf : -Inf, n_particles)
-
-    # Initialize global best
-    global_best_position = zeros(dim)
-    global_best_fitness = is_min ? Inf : -Inf
-
-    # Initialize convergence curve
-    convergence_curve = zeros(max_iter)
-
-    # Function evaluation counter
-    evaluations = 0
-
-    # Initialize particles with random positions and velocities
-    for i in 1:n_particles
-        # Random position within bounds
-        for j in 1:dim
-            min_val, max_val = bounds[j]
-            positions[i, j] = min_val + rand() * (max_val - min_val)
-            # Random velocity within [-|max-min|, |max-min|]
-            velocities[i, j] = (rand() * 2 - 1) * (max_val - min_val)
+    for p in alg.particles
+        # Initialize position within bounds
+        for d in 1:problem.dimensions
+            p.position[d] = problem.bounds[d][1] + rand() * (problem.bounds[d][2] - problem.bounds[d][1])
         end
+        p.velocity .= 0.0 # Initialize velocity (or small random)
+        p.best_position = copy(p.position)
+        # Initial fitness evaluation (conceptual - would involve agents if distributed)
+        p.current_fitness = problem.objective_function(p.position)
+        p.best_fitness = p.current_fitness
 
-        # Evaluate fitness
-        fitness = obj_func(positions[i, :])
-        evaluations += 1
-
-        # Initialize personal best
-        personal_best_positions[i, :] = positions[i, :]
-        personal_best_fitness[i] = fitness
-
-        # Update global best if needed
-        if (is_min && fitness < global_best_fitness) || (!is_min && fitness > global_best_fitness)
-            global_best_fitness = fitness
-            global_best_position = positions[i, :]
-        end
-    end
-
-    # Main PSO loop
-    for iter in 1:max_iter
-        # Update inertia weight
-        w = w * w_damp
-
-        # Update particles
-        for i in 1:n_particles
-            # Update velocity
-            for j in 1:dim
-                # Cognitive component
-                r1 = rand()
-                cognitive = c1 * r1 * (personal_best_positions[i, j] - positions[i, j])
-
-                # Social component
-                r2 = rand()
-                social = c2 * r2 * (global_best_position[j] - positions[i, j])
-
-                # Update velocity with inertia
-                velocities[i, j] = w * velocities[i, j] + cognitive + social
-
-                # Apply velocity bounds (optional)
-                min_val, max_val = bounds[j]
-                vel_range = max_val - min_val
-                velocities[i, j] = clamp(velocities[i, j], -vel_range, vel_range)
+        if problem.is_minimization
+            if p.best_fitness < alg.global_best_fitness
+                alg.global_best_fitness = p.best_fitness
+                alg.global_best_position = copy(p.best_position)
             end
-
-            # Update position
-            for j in 1:dim
-                positions[i, j] += velocities[i, j]
-
-                # Apply position bounds
-                min_val, max_val = bounds[j]
-                positions[i, j] = clamp(positions[i, j], min_val, max_val)
-            end
-
-            # Evaluate fitness
-            fitness = obj_func(positions[i, :])
-            evaluations += 1
-
-            # Update personal best if needed
-            if (is_min && fitness < personal_best_fitness[i]) || (!is_min && fitness > personal_best_fitness[i])
-                personal_best_fitness[i] = fitness
-                personal_best_positions[i, :] = positions[i, :]
-
-                # Update global best if needed
-                if (is_min && fitness < global_best_fitness) || (!is_min && fitness > global_best_fitness)
-                    global_best_fitness = fitness
-                    global_best_position = positions[i, :]
-                end
-            end
-        end
-
-        # Store best fitness for convergence curve
-        convergence_curve[iter] = global_best_fitness
-
-        # Call callback if provided
-        if callback !== nothing
-            callback_result = callback(iter, global_best_position, global_best_fitness, positions)
-            if callback_result === false
-                # Early termination if callback returns false
-                convergence_curve = convergence_curve[1:iter]
-                break
+        else # Maximization
+            if p.best_fitness > alg.global_best_fitness
+                alg.global_best_fitness = p.best_fitness
+                alg.global_best_position = copy(p.best_position)
             end
         end
     end
-
-    return OptimizationResult(
-        global_best_position,
-        global_best_fitness,
-        convergence_curve,
-        max_iter,
-        evaluations,
-        "Particle Swarm Optimization",
-        success = true,
-        message = "Optimization completed successfully"
-    )
+    @info "PSOAlgorithm initialized with $(alg.num_particles) particles."
 end
 
-end # module
+function SwarmBase.step!(alg::PSOAlgorithm, problem::OptimizationProblem, agents::Vector{String}, current_iter::Int, shared_data::Dict, config_params::Dict)::Union{SwarmSolution, Nothing}
+    @info "PSOAlgorithm: Step $current_iter"
+    
+    # This is where agent-based evaluation would happen if the objective function is distributed.
+    # For now, assume direct evaluation.
+    num_agents_available = length(agents)
+    # Example: if num_agents_available > 0, distribute particle evaluations among them.
+    # For simplicity, direct evaluation here:
+
+    for p in alg.particles
+        # Update velocity
+        r1, r2 = rand(), rand()
+        cognitive_component = alg.cognitive_coeff * r1 * (p.best_position - p.position)
+        social_component = alg.social_coeff * r2 * (alg.global_best_position - p.position)
+        p.velocity = alg.inertia_weight * p.velocity + cognitive_component + social_component
+
+        # TODO: Add velocity clamping if bounds are defined for velocity
+
+        # Update position
+        p.position += p.velocity
+
+        # Clamp position to bounds
+        for d in 1:problem.dimensions
+            p.position[d] = clamp(p.position[d], problem.bounds[d][1], problem.bounds[d][2])
+        end
+
+        # Evaluate fitness - This should be done by agents in a distributed manner.
+        # The algorithm step should prepare evaluation tasks.
+        # The Swarm._swarm_algorithm_loop will manage sending these tasks and collecting results.
+        # For now, we'll still do direct evaluation here as a placeholder for that distributed logic.
+        # In a real distributed setup, this `step!` might return a list of positions to evaluate,
+        # and then be called again with the fitness results.
+        # Or, it might directly publish tasks and then the main loop polls/waits.
+        
+        # Conceptual: If agents are used for evaluation:
+        # 1. This function would identify which particles need evaluation.
+        # 2. It would prepare task data (e.g., particle index, position).
+        # 3. The main `_swarm_algorithm_loop` would then take these tasks,
+        #    publish them to agents, and collect fitness values.
+        # 4. These fitness values would then be fed back to update `p.current_fitness`.
+        
+        # Direct evaluation placeholder:
+        p.current_fitness = problem.objective_function(p.position)
+
+        # Update personal best
+        if problem.is_minimization
+            if p.current_fitness < p.best_fitness
+                p.best_fitness = p.current_fitness
+                p.best_position = copy(p.position)
+            end
+        else # Maximization
+             if p.current_fitness > p.best_fitness # Corrected: was > for min too
+                p.best_fitness = p.current_fitness
+                p.best_position = copy(p.position)
+            end
+        end
+    end
+
+    # Update global best from personal bests
+    for p in alg.particles
+        if problem.is_minimization
+            if p.best_fitness < alg.global_best_fitness
+                alg.global_best_fitness = p.best_fitness
+                alg.global_best_position = copy(p.best_position)
+            end
+        else # Maximization
+            if p.best_fitness > alg.global_best_fitness # Corrected: was > for min too
+                alg.global_best_fitness = p.best_fitness
+                alg.global_best_position = copy(p.best_position)
+            end
+        end
+    end
+    
+    # The step function in a distributed setup might return:
+    # - A list of tasks for agents (e.g., positions to evaluate).
+    # - Or, if it handles internal state updates based on received fitnesses,
+    #   it might return the current best solution or nothing if it's an intermediate step.
+    # For this placeholder, we return the current global best.
+    return SwarmSolution(copy(alg.global_best_position), alg.global_best_fitness)
+end
+
+function SwarmBase.should_terminate(alg::PSOAlgorithm, current_iter::Int, max_iter::Int, best_solution::Union{SwarmSolution,Nothing}, target_fitness::Union{Float64,Nothing}, problem::OptimizationProblem)::Bool
+    if !isnothing(best_solution) && !isnothing(target_fitness)
+        if problem.is_minimization && best_solution.fitness <= target_fitness
+            @info "PSO: Target fitness reached."
+            return true
+        elseif !problem.is_minimization && best_solution.fitness >= target_fitness
+            @info "PSO: Target fitness reached."
+            return true
+        end
+    end
+    # TODO: Add other termination criteria (e.g., stagnation)
+    return current_iter >= max_iter
+end
+
+end # module PSOAlgorithmImpl

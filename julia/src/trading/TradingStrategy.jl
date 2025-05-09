@@ -1,402 +1,464 @@
 """
-TradingStrategy.jl - Trading strategies for DeFi
-
-This module provides trading strategies for DeFi using swarm optimization algorithms.
+TradingStrategy.jl - Core module for defining and managing trading strategies in JuliaOS.
 """
 module TradingStrategy
 
-export AbstractStrategy, OptimalPortfolioStrategy, ArbitrageStrategy, MovingAverageCrossoverStrategy, MeanReversionStrategy
-export optimize_portfolio, find_arbitrage_opportunities, execute_strategy, backtest_strategy
-# Export from RiskManagement
-export RiskParameters, PositionSizer, StopLossManager, RiskManager
-export calculate_position_size, set_stop_loss, set_take_profit, check_risk_limits
-export calculate_value_at_risk, calculate_expected_shortfall, calculate_kelly_criterion
+# Necessary using statements - these will depend on where DEXBase, SwarmBase, etc., are finally located
+# and how they are exposed by JuliaOSFramework.jl.
+# Assuming they are made available by `using Main.JuliaOSFramework.<ModuleName>` or similar.
+# For now, using relative paths assuming a certain structure within modules.
+# These paths assume TradingStrategy.jl is in julia/src/trading/
+try
+    # For DEXToken, AbstractDEX, DEXPair, and functions like DEX.get_price
+    using ..dex.DEXBase 
+    using ..dex.DEX # For create_dex_instance if needed, or direct DEX type usage
 
-using ..DEXBase
-using ..SwarmBase
-using ..DEPSO
-using ..PriceFeeds
-using Statistics  # For mean, cov functions
+    # For PriceData, PricePoint, AbstractPriceFeed, and functions like PriceFeed.get_historical_prices
+    using ..price.PriceFeedBase
+    using ..price.PriceFeed # For create_price_feed if needed
+
+    # using ..swarm.SwarmBase # If strategies directly use swarm optimization problem definitions
+    # using ..swarm.Swarms    # If strategies trigger swarm optimizations
+
+    using Statistics
+    using LinearAlgebra # For matrix operations like transpose, covariance
+    @info "TradingStrategy.jl: Successfully loaded core dependencies (DEX, PriceFeed, Stats, LinearAlgebra)."
+catch e
+    @error "TradingStrategy.jl: Error loading core dependencies. Some functionalities might not work." exception=(e, catch_backtrace())
+    # Define minimal stubs if loading fails, to allow the rest of the module to parse.
+    module DEXBaseStub; struct DEXToken end; struct AbstractDEX end; struct DEXPair end; get_price(dex, pair) = 0.0; end
+    module DEXStub; create_dex_instance(p,v,c) = nothing; end
+    module PriceFeedBaseStub; struct PriceData end; struct PricePoint end; struct AbstractPriceFeed end; end
+    module PriceFeedStub; get_historical_prices(pf,b,q;kwargs...) = PriceFeedBaseStub.PriceData(); create_price_feed(p,c) = nothing; end
+    
+    using .DEXBaseStub
+    using .DEXStub
+    using .PriceFeedBaseStub
+    using .PriceFeedStub
+    using Statistics # Likely to be available
+    using LinearAlgebra # Likely to be available
+end
+
+# Ensure DEXToken is usable without prefix if DEXBase is used
+# This might not be necessary if `using ..dex.DEXBase` exports it, which it should.
+# using ..dex.DEXBase: DEXToken 
+
+export AbstractStrategy, OptimalPortfolioStrategy, ArbitrageStrategy
+export optimize_portfolio, find_arbitrage_opportunities, execute_strategy # backtest_strategy
+# RiskManagement types/functions will be in RiskManagement.jl and re-exported if needed by a main Trading.jl
 
 """
     AbstractStrategy
 
-Abstract type for trading strategies.
+Abstract type for all trading strategies.
+Each concrete strategy should subtype this and implement methods like
+`execute_strategy` and potentially `backtest_strategy`.
 """
 abstract type AbstractStrategy end
 
 """
     OptimalPortfolioStrategy <: AbstractStrategy
 
-Strategy for optimizing a portfolio of tokens.
+Strategy for optimizing a portfolio of tokens based on modern portfolio theory (e.g., maximizing Sharpe ratio).
 
 # Fields
-- `tokens::Vector{DEXToken}`: The tokens in the portfolio
-- `initial_weights::Vector{Float64}`: The initial weights of the tokens
-- `risk_tolerance::Float64`: The risk tolerance (0-1)
-- `max_iterations::Int`: Maximum number of iterations for optimization
-- `population_size::Int`: Population size for the swarm algorithm
+- `name::String`: A descriptive name for this strategy instance.
+- `tokens::Vector{DEXToken}`: The tokens to include in the portfolio.
+- `historical_data_source::Any`: Configuration for fetching historical prices (e.g., a PriceFeed instance or config).
+- `risk_free_rate::Float64`: The risk-free rate to use for Sharpe ratio calculation.
+- `optimization_params::Dict{String, Any}`: Parameters for the optimization algorithm (e.g., iterations, population for swarm).
 """
 struct OptimalPortfolioStrategy <: AbstractStrategy
-    tokens::Vector{DEXToken}
-    initial_weights::Vector{Float64}
-    risk_tolerance::Float64
-    max_iterations::Int
-    population_size::Int
+    name::String
+    tokens::Vector{DEXBase.DEXToken} # Explicitly use DEXToken from DEXBase
+    price_feed_provider_name::String # e.g., "chainlink", "mock"
+    price_feed_config::Dict{Symbol, Any} # Config for creating the price feed instance
+    risk_free_rate::Float64
+    optimization_params::Dict{String, Any} # e.g., max_iterations, population_size for PSO/DE
 
     function OptimalPortfolioStrategy(
-        tokens::Vector{DEXToken},
-        initial_weights::Vector{Float64} = Float64[];
-        risk_tolerance::Float64 = 0.5,
-        max_iterations::Int = 100,
-        population_size::Int = 50
+        name::String,
+        tokens::Vector{DEXBase.DEXToken}; # Explicitly use DEXToken
+        price_feed_provider::String = "chainlink", # Default provider
+        price_feed_config_override::Dict{Symbol, Any} = Dict{Symbol,Any}(), # For RPC URL, chain_id etc.
+        risk_free_rate::Float64 = 0.02, 
+        optimization_params::Dict{String, Any} = Dict("max_iterations"=>100, "population_size"=>50)
     )
-        # Validate inputs
-        if !isempty(initial_weights) && length(tokens) != length(initial_weights)
-            error("Number of tokens must match number of weights")
+        if isempty(tokens)
+            error("OptimalPortfolioStrategy requires at least one token.")
         end
+        # Default price feed config if not fully overridden
+        # This should align with PriceFeedBase.PriceFeedConfig defaults or app-level defaults
+        default_pf_config = Dict{Symbol, Any}(
+            :name => name * "_pricefeed", 
+            :chain_id => isempty(tokens) ? 1 : tokens[1].chain_id, # Assume all tokens on same chain for simplicity
+            :rpc_url => get(ENV, "ETH_RPC_URL", "http://localhost:8545") # Example default
+        )
+        final_pf_config = merge(default_pf_config, price_feed_config_override)
 
-        if !isempty(initial_weights) && !isapprox(sum(initial_weights), 1.0, atol=1e-6)
-            error("Weights must sum to 1.0")
-        end
-
-        if risk_tolerance < 0.0 || risk_tolerance > 1.0
-            error("Risk tolerance must be between 0 and 1")
-        end
-
-        # If no initial weights provided, use equal weights
-        if isempty(initial_weights)
-            initial_weights = fill(1.0 / length(tokens), length(tokens))
-        end
-
-        new(tokens, initial_weights, risk_tolerance, max_iterations, population_size)
+        new(name, tokens, price_feed_provider, final_pf_config, risk_free_rate, optimization_params)
     end
 end
 
 """
     ArbitrageStrategy <: AbstractStrategy
 
-Strategy for finding and executing arbitrage opportunities.
+Strategy for identifying and (conceptually) executing arbitrage opportunities across different DEXs or pairs.
 
 # Fields
-- `dexes::Vector{AbstractDEX}`: The DEXes to search for arbitrage
-- `tokens::Vector{DEXToken}`: The tokens to consider for arbitrage
-- `min_profit_threshold::Float64`: Minimum profit threshold (percentage)
-- `max_iterations::Int`: Maximum number of iterations for optimization
-- `population_size::Int`: Population size for the swarm algorithm
+- `name::String`: A descriptive name for this strategy instance.
+- `dex_instances::Vector{AbstractDEX}`: A list of configured DEX instances to scan.
+- `tokens_of_interest::Vector{DEXToken}`: Tokens to consider for arbitrage paths.
+- `min_profit_threshold_percent::Float64`: Minimum profit percentage to consider an opportunity valid (e.g., 0.5 for 0.5%).
+- `max_trade_size_usd::Float64`: Maximum USD equivalent size for a single arbitrage trade (to consider liquidity).
 """
 struct ArbitrageStrategy <: AbstractStrategy
-    dexes::Vector{AbstractDEX}
-    tokens::Vector{DEXToken}
-    min_profit_threshold::Float64
-    max_iterations::Int
-    population_size::Int
+    name::String
+    dex_instances::Vector{AbstractDEX} # These would be concrete DEX types
+    tokens_of_interest::Vector{DEXToken}
+    min_profit_threshold_percent::Float64
+    max_trade_size_usd::Float64 # To consider liquidity constraints
 
     function ArbitrageStrategy(
-        dexes::Vector{AbstractDEX},
-        tokens::Vector{DEXToken};
-        min_profit_threshold::Float64 = 0.5,
-        max_iterations::Int = 100,
-        population_size::Int = 50
+        name::String,
+        dex_instances::Vector{<:AbstractDEX}, # Use <:AbstractDEX for concrete types
+        tokens_of_interest::Vector{DEXToken};
+        min_profit_threshold_percent::Float64 = 0.1, # Default 0.1%
+        max_trade_size_usd::Float64 = 1000.0 # Default $1000 trade size
     )
-        # Validate inputs
-        if isempty(dexes)
-            error("At least one DEX must be provided")
+        if length(dex_instances) < 2 && length(tokens_of_interest) < 3 # Need at least 2 DEXs or 3 tokens for triangular on one DEX
+            # This condition might be too simple, but basic check
+            @warn "ArbitrageStrategy might not find opportunities with less than 2 DEXs or less than 3 tokens for triangular arbitrage."
         end
-
-        if length(tokens) < 2
-            error("At least two tokens must be provided")
+        if isempty(tokens_of_interest)
+            error("ArbitrageStrategy requires a list of tokens of interest.")
         end
-
-        if min_profit_threshold < 0.0
-            error("Minimum profit threshold must be non-negative")
-        end
-
-        new(dexes, tokens, min_profit_threshold, max_iterations, population_size)
+        new(name, dex_instances, tokens_of_interest, min_profit_threshold_percent, max_trade_size_usd)
     end
 end
 
-# ===== Portfolio Optimization =====
 
-"""
-    calculate_expected_return(weights::Vector{Float64}, historical_returns::Vector{Float64})
+# ===== Portfolio Optimization Helper Functions (from message #24, slightly adapted) =====
 
-Calculate the expected return of a portfolio.
-
-# Arguments
-- `weights::Vector{Float64}`: The weights of the tokens
-- `historical_returns::Vector{Float64}`: The historical returns of the tokens
-
-# Returns
-- `Float64`: The expected return
-"""
-function calculate_expected_return(weights::Vector{Float64}, historical_returns::Vector{Float64})
-    return sum(weights .* historical_returns)
+function _calculate_expected_returns(historical_prices::Matrix{Float64})::Vector{Float64}
+    # Calculate daily returns: (price_t / price_{t-1}) - 1
+    returns = diff(log.(historical_prices), dims=1) # Log returns are often preferred
+    # returns = (historical_prices[2:end, :] ./ historical_prices[1:end-1, :]) .- 1
+    return vec(mean(returns, dims=1)) # Mean of daily log returns
 end
 
-"""
-    calculate_portfolio_variance(weights::Vector{Float64}, covariance_matrix::Matrix{Float64})
-
-Calculate the variance of a portfolio.
-
-# Arguments
-- `weights::Vector{Float64}`: The weights of the tokens
-- `covariance_matrix::Matrix{Float64}`: The covariance matrix of the tokens
-
-# Returns
-- `Float64`: The portfolio variance
-"""
-function calculate_portfolio_variance(weights::Vector{Float64}, covariance_matrix::Matrix{Float64})
-    return weights' * covariance_matrix * weights
+function _calculate_covariance_matrix(historical_prices::Matrix{Float64})::Matrix{Float64}
+    returns = diff(log.(historical_prices), dims=1)
+    # returns = (historical_prices[2:end, :] ./ historical_prices[1:end-1, :]) .- 1
+    return cov(returns)
 end
 
-"""
-    calculate_sharpe_ratio(weights::Vector{Float64}, historical_returns::Vector{Float64},
-                         covariance_matrix::Matrix{Float64}, risk_free_rate::Float64=0.0)
-
-Calculate the Sharpe ratio of a portfolio.
-
-# Arguments
-- `weights::Vector{Float64}`: The weights of the tokens
-- `historical_returns::Vector{Float64}`: The historical returns of the tokens
-- `covariance_matrix::Matrix{Float64}`: The covariance matrix of the tokens
-- `risk_free_rate::Float64`: The risk-free rate
-
-# Returns
-- `Float64`: The Sharpe ratio
-"""
-function calculate_sharpe_ratio(weights::Vector{Float64}, historical_returns::Vector{Float64},
-                              covariance_matrix::Matrix{Float64}, risk_free_rate::Float64=0.0)
-    expected_return = calculate_expected_return(weights, historical_returns)
-    portfolio_variance = calculate_portfolio_variance(weights, covariance_matrix)
-
-    if portfolio_variance == 0.0
-        return 0.0
-    end
-
-    return (expected_return - risk_free_rate) / sqrt(portfolio_variance)
+function _calculate_portfolio_performance(weights::Vector{Float64}, mean_returns::Vector{Float64}, cov_matrix::Matrix{Float64}, risk_free_rate::Float64)
+    # Annualize returns and volatility (assuming daily data, 252 trading days)
+    # This is a simplification; actual annualization depends on data frequency.
+    trading_days = 252 
+    
+    portfolio_return = sum(weights .* mean_returns) * trading_days
+    portfolio_volatility = sqrt(weights' * cov_matrix * weights) * sqrt(trading_days)
+    
+    sharpe_ratio = portfolio_volatility == 0 ? 0.0 : (portfolio_return - risk_free_rate) / portfolio_volatility
+    return portfolio_return, portfolio_volatility, sharpe_ratio
 end
 
 """
     optimize_portfolio(strategy::OptimalPortfolioStrategy, historical_prices::Matrix{Float64})
 
-Optimize a portfolio using the DEPSO algorithm.
-
-# Arguments
-- `strategy::OptimalPortfolioStrategy`: The portfolio optimization strategy
-- `historical_prices::Matrix{Float64}`: The historical prices of the tokens (rows = time, cols = tokens)
-
-# Returns
-- `Tuple{Vector{Float64}, Float64, Float64}`: The optimal weights, expected return, and risk
+Optimizes portfolio weights to maximize Sharpe ratio.
+`historical_prices` should be a matrix where rows are time periods and columns are tokens,
+ordered consistently with `strategy.tokens`.
 """
 function optimize_portfolio(strategy::OptimalPortfolioStrategy, historical_prices::Matrix{Float64})
-    # Calculate historical returns
-    n_periods, n_tokens = size(historical_prices)
-
-    if n_tokens != length(strategy.tokens)
-        error("Number of tokens in historical prices must match number of tokens in strategy")
+    num_tokens = length(strategy.tokens)
+    if size(historical_prices, 2) != num_tokens
+        error("Number of columns in historical_prices must match number of tokens in strategy.")
+    end
+    if size(historical_prices, 1) < 20 # Need sufficient data
+        error("Insufficient historical price data points (need at least 20).")
     end
 
-    if n_periods < 2
-        error("At least two periods of historical prices are required")
+    mean_returns = _calculate_expected_returns(historical_prices)
+    cov_matrix = _calculate_covariance_matrix(historical_prices)
+
+    # Objective function: Maximize Sharpe ratio (or minimize negative Sharpe ratio)
+    function objective_sharpe(weights::Vector{Float64})
+        # Constraint: sum of weights must be 1. Normalize within objective.
+        normalized_weights = weights ./ sum(weights) 
+        # Constraint: weights must be non-negative (long-only portfolio)
+        if any(w -> w < -1e-6, normalized_weights) # Allow small negative due to normalization noise
+            return Inf # Penalize negative weights heavily for minimization
+        end
+        
+        _ret, _vol, sharpe = _calculate_portfolio_performance(normalized_weights, mean_returns, cov_matrix, strategy.risk_free_rate)
+        return -sharpe # Minimize negative Sharpe
     end
 
-    # Calculate daily returns
-    returns = zeros(n_periods - 1, n_tokens)
-    for i in 1:n_periods-1
-        for j in 1:n_tokens
-            returns[i, j] = (historical_prices[i+1, j] - historical_prices[i, j]) / historical_prices[i, j]
+    # Optimization problem for a swarm algorithm (e.g., PSO, DE)
+    # Bounds for weights (0 to 1 for each token)
+    bounds = [(0.0, 1.0) for _ in 1:num_tokens]
+    
+    # This is where we'd use a SwarmBase.OptimizationProblem and an algorithm from Swarms.jl
+    # For now, this part is conceptual as it requires the Swarm optimization infra.
+    @warn "Portfolio optimization using swarm algorithm is conceptual. Using a simplified placeholder."
+    # Placeholder: Return equal weights or random weights for now
+    # optimal_weights = fill(1.0 / num_tokens, num_tokens) 
+    
+    # Simulate a simple optimization by trying a few random portfolios
+    best_sharpe = -Inf
+    optimal_weights = fill(1.0 / num_tokens, num_tokens)
+    for _ in 1:get(strategy.optimization_params, "population_size", 50) * get(strategy.optimization_params, "max_iterations", 20) # Simplified iterations
+        temp_weights = rand(num_tokens)
+        temp_weights ./= sum(temp_weights) # Normalize
+        neg_sharpe = objective_sharpe(temp_weights)
+        if -neg_sharpe > best_sharpe
+            best_sharpe = -neg_sharpe
+            optimal_weights = temp_weights
         end
     end
+    
+    final_return, final_volatility, final_sharpe = _calculate_portfolio_performance(optimal_weights, mean_returns, cov_matrix, strategy.risk_free_rate)
 
-    # Calculate mean returns and covariance matrix
-    mean_returns = vec(mean(returns, dims=1))
-    covariance_matrix = cov(returns)
-
-    # Define the objective function (negative Sharpe ratio)
-    function objective(weights::Vector{Float64})
-        # Ensure weights sum to 1
-        weights = weights ./ sum(weights)
-
-        # Calculate Sharpe ratio
-        sharpe = calculate_sharpe_ratio(weights, mean_returns, covariance_matrix)
-
-        # Return negative Sharpe ratio (we want to maximize Sharpe ratio)
-        return -sharpe
-    end
-
-    # Define the optimization problem
-    problem = OptimizationProblem(
-        n_tokens,
-        [(0.0, 1.0) for _ in 1:n_tokens],  # Bounds: weights between 0 and 1
-        objective;
-        is_minimization = true
+    return Dict(
+        "optimal_weights" => optimal_weights,
+        "expected_annual_return" => final_return,
+        "annual_volatility" => final_volatility,
+        "sharpe_ratio" => final_sharpe
     )
-
-    # Define the DEPSO algorithm
-    algorithm = HybridDEPSO(
-        population_size = strategy.population_size,
-        max_iterations = strategy.max_iterations,
-        F = 0.8,
-        CR = 0.9,
-        w = 0.7,
-        c1 = 1.5,
-        c2 = 1.5,
-        hybrid_ratio = 0.5,
-        adaptive = true
-    )
-
-    # Run the optimization
-    result = DEPSO.optimize(problem, algorithm)
-
-    # Normalize weights to sum to 1
-    optimal_weights = result.best_position ./ sum(result.best_position)
-
-    # Calculate expected return and risk
-    expected_return = calculate_expected_return(optimal_weights, mean_returns)
-    risk = sqrt(calculate_portfolio_variance(optimal_weights, covariance_matrix))
-
-    return (optimal_weights, expected_return, risk)
 end
 
-# ===== Arbitrage Opportunities =====
 
 """
     find_arbitrage_opportunities(strategy::ArbitrageStrategy)
 
-Find arbitrage opportunities across DEXes.
-
-# Arguments
-- `strategy::ArbitrageStrategy`: The arbitrage strategy
-
-# Returns
-- `Vector{Dict{String, Any}}`: The arbitrage opportunities
+Scans configured DEXs for arbitrage opportunities among the specified tokens.
+This is a simplified version. Real arbitrage needs to consider gas costs, transaction speed, and slippage.
 """
 function find_arbitrage_opportunities(strategy::ArbitrageStrategy)
-    opportunities = Dict{String, Any}[]
+    opportunities = []
+    # This requires interaction with DEX modules to get prices.
+    @warn "find_arbitrage_opportunities is a placeholder. Real implementation needed with actual DEX calls."
 
-    # For each pair of tokens
-    for i in 1:length(strategy.tokens)-1
-        for j in i+1:length(strategy.tokens)
-            token_a = strategy.tokens[i]
-            token_b = strategy.tokens[j]
+    # Conceptual loop:
+    # For each token_A in tokens_of_interest:
+    #   For each token_B in tokens_of_interest (where B != A):
+    #     For each dex1 in strategy.dex_instances:
+    #       For each dex2 in strategy.dex_instances (where dex2 != dex1):
+    #         Try to find pair A/B on dex1 and dex2.
+    #         pair_AB_dex1 = DEX.find_pair(dex1, token_A, token_B) # Needs find_pair helper
+    #         pair_AB_dex2 = DEX.find_pair(dex2, token_A, token_B)
+    #         If both exist:
+    #           price_A_in_B_dex1 = DEX.get_price(dex1, pair_AB_dex1) # Price of A in terms of B
+    #           price_A_in_B_dex2 = DEX.get_price(dex2, pair_AB_dex2)
+    #
+    #           If price_A_in_B_dex1 < price_A_in_B_dex2: # Buy A on dex1, Sell A on dex2
+    #             profit_ratio = price_A_in_B_dex2 / price_A_in_B_dex1 - 1
+    #             profit_percent = profit_ratio * 100
+    #             If profit_percent > strategy.min_profit_threshold_percent:
+    #               # Consider liquidity, gas costs
+    #               # Add to opportunities list
+    #               # ...
+    #           Else if price_A_in_B_dex2 < price_A_in_B_dex1: # Buy A on dex2, Sell A on dex1
+    #               # ... similar logic ...
+    #
+    # Consider triangular: A -> B on dex1, B -> C on dex1 (or dex2), C -> A on dex1 (or dex3)
 
-            # Get prices across DEXes
-            prices = Dict{String, Float64}()
+    # Mock opportunity:
+    if length(strategy.tokens_of_interest) >= 2 && length(strategy.dex_instances) >= 1 # Simplified condition
+        # Create mock DEXPairs for the mock opportunity
+        token_a = strategy.tokens_of_interest[1]
+        token_b = strategy.tokens_of_interest[2]
+        mock_pair_ab = DEXBase.DEXPair("mock-$(token_a.symbol)/$(token_b.symbol)", token_a, token_b, 0.3, "mock_dex")
 
-            for dex in strategy.dexes
-                # Find the pair for these tokens
-                pairs = DEXBase.get_pairs(dex)
+        dex_to_use_buy = strategy.dex_instances[1]
+        dex_to_use_sell = length(strategy.dex_instances) >= 2 ? strategy.dex_instances[2] : strategy.dex_instances[1]
 
-                for pair in pairs
-                    if (pair.token0.address == token_a.address && pair.token1.address == token_b.address) ||
-                       (pair.token0.address == token_b.address && pair.token1.address == token_a.address)
-                        # Get the price
-                        price = DEXBase.get_price(dex, pair)
+        # Simulate getting prices (these would be actual calls)
+        price_buy_dex = DEXBase.get_price(dex_to_use_buy, mock_pair_ab) # Mock price
+        price_sell_dex = DEXBase.get_price(dex_to_use_sell, mock_pair_ab) * (1 + rand(0.005:0.0001:0.02)) # Slightly different mock price
 
-                        # Adjust the price if the pair is reversed
-                        if pair.token0.address == token_b.address
-                            price = 1.0 / price
-                        end
-
-                        prices[dex.config.name] = price
-                        break
-                    end
-                end
-            end
-
-            # Check for arbitrage opportunities
-            if length(prices) >= 2
-                # Find the best buy and sell prices
-                best_buy_price = Inf
-                best_buy_dex = ""
-                best_sell_price = 0.0
-                best_sell_dex = ""
-
-                for (dex_name, price) in prices
-                    if price < best_buy_price
-                        best_buy_price = price
-                        best_buy_dex = dex_name
-                    end
-
-                    if price > best_sell_price
-                        best_sell_price = price
-                        best_sell_dex = dex_name
-                    end
-                end
-
-                # Calculate the profit percentage
-                profit_percentage = (best_sell_price - best_buy_price) / best_buy_price * 100.0
-
-                # If the profit is above the threshold, add it to the opportunities
-                if profit_percentage >= strategy.min_profit_threshold
-                    push!(opportunities, Dict(
-                        "token_a" => token_a,
-                        "token_b" => token_b,
-                        "buy_dex" => best_buy_dex,
-                        "buy_price" => best_buy_price,
-                        "sell_dex" => best_sell_dex,
-                        "sell_price" => best_sell_price,
-                        "profit_percentage" => profit_percentage
-                    ))
-                end
+        if price_buy_dex > 0 && price_sell_dex > price_buy_dex
+            profit_ratio = (price_sell_dex - price_buy_dex) / price_buy_dex
+            profit_percent = profit_ratio * 100
+            if profit_percent >= strategy.min_profit_threshold_percent
+                 push!(opportunities, Dict(
+                    "path" => "$(token_a.symbol) -> $(token_b.symbol)",
+                    "dex_buy_at" => dex_to_use_buy.config.name,
+                    "price_buy" => price_buy_dex,
+                    "dex_sell_at" => dex_to_use_sell.config.name,
+                    "price_sell" => price_sell_dex,
+                    "estimated_profit_percent" => profit_percent,
+                    "details" => "Mock arbitrage: Buy $(token_a.symbol) on $(dex_to_use_buy.config.name), sell on $(dex_to_use_sell.config.name)."
+                ))
             end
         end
     end
-
-    # Sort opportunities by profit percentage (descending)
-    sort!(opportunities, by = x -> x["profit_percentage"], rev = true)
-
     return opportunities
 end
 
 """
-    execute_strategy(strategy::AbstractStrategy, args...)
+    execute_strategy(strategy::AbstractStrategy, current_market_data::Any)
 
-Execute a trading strategy.
+Executes the logic of a given trading strategy based on current market data.
+The nature of `current_market_data` will vary by strategy.
+"""
+function execute_strategy(strategy::OptimalPortfolioStrategy; historical_prices_matrix::Union{Matrix{Float64}, Nothing}=nothing, 
+                          num_days_history::Int=90, interval::String="1d")
+    @info "Executing OptimalPortfolioStrategy: $(strategy.name)"
+    
+    local historical_prices::Matrix{Float64}
+    if !isnothing(historical_prices_matrix)
+        historical_prices = historical_prices_matrix
+    else
+        # Fetch historical data using the configured price feed
+        @info "Fetching historical data for OptimalPortfolioStrategy..."
+        pf_config_obj = PriceFeedBase.PriceFeedConfig(;strategy.price_feed_config...)
+        price_feed_instance = PriceFeed.create_price_feed(Symbol(strategy.price_feed_provider_name), pf_config_obj) # Symbol for provider
+        
+        # For multiple tokens, get_historical_prices needs to be called for each pair against a common quote (e.g., USD)
+        # And then assembled into a matrix. This is a complex step.
+        # Assuming for now, historical_prices are for each token against a common quote, ordered as strategy.tokens.
+        # This part needs a robust implementation for fetching and aligning multi-asset historical data.
+        @warn "Multi-asset historical data fetching for OptimalPortfolioStrategy is a placeholder."
+        
+        # Placeholder: fetch for the first token vs USD (or a mock quote)
+        if isempty(strategy.tokens) error("No tokens in OptimalPortfolioStrategy to fetch prices for.") end
+        
+        # Create a temporary matrix (num_days_history x num_tokens)
+        # This mock data does not reflect real correlations or price movements.
+        num_tokens = length(strategy.tokens)
+        historical_prices = zeros(Float64, num_days_history, num_tokens)
+        for i in 1:num_tokens
+            # Simulate some price data for each token
+            base_price = rand(50:2000)
+            for day_idx in 1:num_days_history
+                historical_prices[day_idx, i] = base_price * (1 + (rand()-0.5)*0.1 * (day_idx/num_days_history)) # Simple random walk
+            end
+        end
+        @info "Using mock historical price data for $(num_tokens) tokens over $num_days_history days."
+    end
+
+    optimization_result = optimize_portfolio(strategy, historical_prices) # Pass the fetched/provided matrix
+    return Dict(
+        "strategy_name" => strategy.name,
+        "strategy_type" => "OptimalPortfolio",
+        "result" => optimization_result,
+        "action_taken" => "Portfolio weights optimized. Rebalancing would be the next step." # Placeholder
+    )
+end
+
+function execute_strategy(strategy::ArbitrageStrategy) # Market data might be implicitly fetched by find_arbitrage
+    @info "Executing ArbitrageStrategy: $(strategy.name)"
+    opportunities = find_arbitrage_opportunities(strategy)
+    # In a real scenario, this might attempt to execute profitable arbitrages.
+    return Dict(
+        "strategy_name" => strategy.name,
+        "strategy_type" => "Arbitrage",
+        "opportunities_found" => opportunities,
+        "action_taken" => isempty(opportunities) ? "No arbitrage opportunities found meeting criteria." : "Arbitrage opportunities identified. Execution would be next."
+    )
+end
+
+# TODO: Implement backtest_strategy function
+"""
+    backtest_strategy(strategy::AbstractStrategy, 
+                      historical_market_data::Any; 
+                      initial_capital::Float64=10000.0, 
+                      transaction_cost_percent::Float64=0.1, # e.g., 0.1% per trade
+                      start_date::Union{DateTime,Nothing}=nothing,
+                      end_date::Union{DateTime,Nothing}=nothing)
+
+Simulates the execution of a trading strategy over a historical period.
 
 # Arguments
-- `strategy::AbstractStrategy`: The trading strategy
-- `args...`: Additional arguments specific to the strategy
+- `strategy`: The configured strategy instance.
+- `historical_market_data`: Data needed by the strategy. This could be a `Dict` containing
+  price series for different assets, or a more structured object. For strategies like
+  `OptimalPortfolioStrategy`, this might be a matrix of prices. For MA/MeanReversion,
+  a vector of prices for the specific asset pair.
+- `initial_capital`: Starting capital for the backtest.
+- `transaction_cost_percent`: Percentage cost per trade.
+- `start_date`, `end_date`: Optional date range for the backtest.
 
 # Returns
-- `Dict{String, Any}`: The result of the strategy execution
+- A `Dict` containing backtest results (e.g., final portfolio value, Sharpe ratio, max drawdown, trades executed).
 """
-function execute_strategy(strategy::OptimalPortfolioStrategy, historical_prices::Matrix{Float64})
-    # Optimize the portfolio
-    optimal_weights, expected_return, risk = optimize_portfolio(strategy, historical_prices)
+function backtest_strategy(strategy::AbstractStrategy, 
+                           historical_market_data::Any; 
+                           initial_capital::Float64=10000.0, 
+                           transaction_cost_percent::Float64=0.1,
+                           start_date::Union{DateTime,Nothing}=nothing,
+                           end_date::Union{DateTime,Nothing}=nothing)::Dict{String, Any}
+    
+    @info "Starting backtest for strategy: $(strategy.name)"
+    @warn "backtest_strategy is a placeholder. Real implementation needed for simulation loop, trade execution, and P&L tracking."
 
-    # Return the result
+    # Conceptual Steps:
+    # 1. Prepare historical data based on strategy type and date range.
+    #    - For OptimalPortfolio: Ensure `historical_market_data` is a matrix of prices for `strategy.tokens`.
+    #    - For MA/MeanReversion: Ensure `historical_market_data` is a vector for `strategy.asset_pair`.
+    #    - For Arbitrage: This is more complex; might need tick data or frequent snapshots across DEXs.
+
+    # 2. Initialize portfolio state (cash, positions).
+    #    current_cash = initial_capital
+    #    positions = Dict{String, Float64}() # asset_symbol => quantity
+    #    portfolio_history = [] # To track value over time
+
+    # 3. Loop through historical data points (e.g., daily, hourly):
+    #    a. Get current market prices for this time step.
+    #    b. Call `execute_strategy(strategy, current_market_snapshot_or_relevant_history)`
+    #       - The `execute_strategy` for each strategy type would return signals (BUY/SELL/HOLD) or target allocations.
+    #    c. Simulate trade execution based on signals:
+    #       - Calculate trade size (e.g., using RiskManagement.calculate_position_size).
+    #       - Update `current_cash` and `positions`.
+    #       - Account for `transaction_cost_percent`.
+    #    d. Record portfolio value at this time step.
+    #    e. Record trade details.
+
+    # 4. Calculate performance metrics after loop:
+    #    - Total Return, Annualized Return
+    #    - Sharpe Ratio, Sortino Ratio
+    #    - Max Drawdown
+    #    - Win/Loss Ratio, Average Win/Loss
+    #    - Number of trades
+
+    # Mock results:
     return Dict(
-        "strategy_type" => "OptimalPortfolioStrategy",
-        "tokens" => strategy.tokens,
-        "optimal_weights" => optimal_weights,
-        "expected_return" => expected_return,
-        "risk" => risk,
-        "sharpe_ratio" => expected_return / risk
+        "strategy_name" => strategy.name,
+        "period_simulated" => isnothing(start_date) || isnothing(end_date) ? "N/A" : "$start_date to $end_date",
+        "initial_capital" => initial_capital,
+        "final_portfolio_value" => initial_capital * (1 + rand(-0.1:0.01:0.5)), # Mock
+        "total_return_percent" => rand(-10.0:0.1:50.0),
+        "sharpe_ratio" => rand(0.1:0.01:2.0),
+        "max_drawdown_percent" => rand(1.0:0.1:25.0),
+        "num_trades" => rand(10:100),
+        "status" => "Mock backtest completed."
     )
 end
+export backtest_strategy # Ensure it's exported
 
-function execute_strategy(strategy::ArbitrageStrategy)
-    # Find arbitrage opportunities
-    opportunities = find_arbitrage_opportunities(strategy)
+# Other strategy implementations (MovingAverage, MeanReversion) would go into their own files
+# and be included by a main Trading.jl module.
 
-    # Return the result
-    return Dict(
-        "strategy_type" => "ArbitrageStrategy",
-        "opportunities" => opportunities,
-        "num_opportunities" => length(opportunities)
-    )
-end
-
-# Include additional strategy modules
-include("MovingAverageStrategy.jl")
+# Include concrete strategy implementations and related modules
 include("RiskManagement.jl")
+include("MovingAverageStrategy.jl")
 include("MeanReversionImpl.jl")
 
-# Re-export from submodules
-using .MovingAverageStrategy
+# Re-export from sub-modules to make them available when `using TradingStrategy`
 using .RiskManagement
-using .MeanReversionImpl
+export RiskParameters, PositionSizer, StopLossManager, RiskManager # From RiskManagement
+export calculate_position_size, set_stop_loss, set_take_profit, check_risk_limits # From RiskManagement
+export calculate_value_at_risk, calculate_expected_shortfall, calculate_kelly_criterion # From RiskManagement
 
-end # module
+using .MovingAverageStrategy
+export MovingAverageCrossoverStrategy # From MovingAverageStrategy (execute_strategy is already multi-dispatch)
+
+using .MeanReversionImpl
+export MeanReversionStrategy # From MeanReversionImpl (execute_strategy is already multi-dispatch)
+
+
+end # module TradingStrategy

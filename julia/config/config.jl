@@ -39,7 +39,8 @@ const DEFAULT_CONFIG = Dict(
     "security" => Dict(
         "rate_limit" => 100,  # requests per minute
         "max_request_size" => 1048576,  # 1MB
-        "enable_authentication" => false
+        "enable_authentication" => true, # Enabled by default
+        "api_keys" => ["default-secret-key-please-change"] # List of valid API keys
     ),
     "bridge" => Dict(
         "port" => 8052,

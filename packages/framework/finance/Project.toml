@@ -1,9 +1,0 @@
-name = "Finance"
-uuid = "c1b2c3d4-e5f6-7890-abcd-ef1234567890"
-authors = ["JuliaOS Team"]
-version = "0.1.0"
-
-[deps]
-JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
-Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
-Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"

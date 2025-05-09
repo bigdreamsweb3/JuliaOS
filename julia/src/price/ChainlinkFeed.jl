@@ -1,394 +1,203 @@
 """
-ChainlinkFeed.jl - Chainlink price feed integration
+ChainlinkFeed.jl - Chainlink price feed integration for JuliaOS
 
-This module provides integration with Chainlink price feeds.
+This module provides integration with Chainlink price feeds by interacting
+with Chainlink contracts on EVM-compatible blockchains.
 """
 module ChainlinkFeed
 
+using Dates, Logging, JSON3, HTTP
+# Assuming PriceFeedBase.jl is in the same directory or correctly pathed by the parent PriceFeed.jl
+using ..PriceFeedBase 
+# Assuming Blockchain.jl (and its EthereumClient) is accessible for on-chain calls.
+# This might require `using Main.JuliaOSFramework.Blockchain` or similar if loaded by a central framework module.
+# For now, direct relative path for a common structure. This needs careful review of actual module loading.
+# Assuming Blockchain.jl is now correctly loaded via JuliaOSFramework.jl and available in this scope.
+import ...framework.JuliaOSFramework.Blockchain # Access Blockchain via the framework
+# EthereumClient might be needed for ABI encoding if not handled by Blockchain.jl directly
+import ...framework.JuliaOSFramework.EthereumClient 
+
 export ChainlinkPriceFeed, create_chainlink_feed
 
-using ..PriceFeedBase
-using HTTP
-using JSON3
-using Dates
-using Random
+# Default Chainlink feed registry (Mainnet Ethereum)
+# Pair => (FeedAddress, DecimalsReturnedByFeedContract)
+# Note: Most Chainlink feeds return 8 decimals for price, but some (like currency pairs against non-USD) might differ.
+# The `decimals` field here refers to the decimals of the *price data itself* from the contract,
+# not the decimals of the underlying assets.
+const DEFAULT_CHAINLINK_FEEDS_MAINNET = Dict{String, Tuple{String, Int}}(
+    "ETH/USD"  => ("0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419", 8),
+    "BTC/USD"  => ("0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c", 8),
+    "LINK/USD" => ("0x2c1d072e956AFFC0D435Cb7AC38EF18d24d9127c", 8),
+    "DAI/USD"  => ("0xAed0c38402a5d19df6E4c03F4E2DceD6e29c1ee9", 8), # DAI/USD might actually be 18 for price
+    "USDC/USD" => ("0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6", 8),
+    "USDT/USD" => ("0x3E7d1eAB13ad0104d2750B8863b489D65364e32D", 8),
+    "AAVE/USD" => ("0x547a514d5e3769680Ce22B2361c10Ea13619e8a9", 8),
+    "UNI/USD"  => ("0x553303d460EE0afB37EdFf9bE42922D8FF63220e", 8),
+    # Aliases
+    "WETH/USD" => ("0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419", 8),
+    # Example for a non-USD pair (ETH/BTC) - address and decimals would be specific
+    # "ETH/BTC"  => ("0xDebXASAFDS...", 18), # Price of ETH in BTC, often 18 decimals
+)
+# TODO: Add registries for other networks (Polygon, Arbitrum, etc.)
 
 """
     ChainlinkPriceFeed <: AbstractPriceFeed
 
-Structure representing a Chainlink price feed.
-
-# Fields
-- `config::PriceFeedConfig`: The price feed configuration
-- `cache::Dict{String, Any}`: Cache for API responses
-- `last_updated::Dict{String, DateTime}`: Timestamps for cache entries
-- `feed_addresses::Dict{String, String}`: Mapping of trading pairs to feed addresses
+Structure representing a Chainlink price feed. It interacts with Chainlink contracts on an EVM chain.
 """
 mutable struct ChainlinkPriceFeed <: AbstractPriceFeed
-    config::PriceFeedConfig
-    cache::Dict{String, Any}
-    last_updated::Dict{String, DateTime}
-    feed_addresses::Dict{String, String}
+    config::PriceFeedConfig # Includes rpc_url, chain_id for the specific network
+    # feed_registry: Dict{String, Tuple{String, Int}} # Pair "BASE/QUOTE" => (FeedAddress, PriceDecimalsFromFeed)
+    # For simplicity, we'll use a pre-defined registry for now, but config could override/extend this.
+    
+    # Internal cache for price data to reduce RPC calls
+    price_cache::Dict{String, Tuple{PricePoint, DateTime}} # "BASE/QUOTE" => (PricePoint, ExpiryTime)
 
     function ChainlinkPriceFeed(config::PriceFeedConfig)
-        # Initialize feed addresses for common pairs
-        feed_addresses = Dict{String, String}(
-            "ETH/USD" => "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
-            "BTC/USD" => "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c",
-            "LINK/USD" => "0x2c1d072e956AFFC0D435Cb7AC38EF18d24d9127c",
-            "DAI/USD" => "0xAed0c38402a5d19df6E4c03F4E2DceD6e29c1ee9",
-            "USDC/USD" => "0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6",
-            "USDT/USD" => "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D",
-            "AAVE/USD" => "0x547a514d5e3769680Ce22B2361c10Ea13619e8a9",
-            "UNI/USD" => "0x553303d460EE0afB37EdFf9bE42922D8FF63220e",
-            "SUSHI/USD" => "0xCc70F09A6CC17553b2E31954cD36E4A2d89501f7",
-            "SNX/USD" => "0xDC3EA94CD0AC27d9A86C180091e7f78C683d3699",
-            # Add aliases for tokens with different symbols
-            "WETH/USD" => "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",  # Same as ETH/USD
-            "WETH/USDT" => "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"   # Approximate using ETH/USD
-        )
-
-        new(config, Dict{String, Any}(), Dict{String, DateTime}(), feed_addresses)
+        # TODO: Load feed registry based on config.chain_id or from config.metadata
+        # For now, assumes mainnet if not specified or uses a default.
+        new(config, Dict{String, Tuple{PricePoint, DateTime}}())
     end
 end
 
-"""
-    create_chainlink_feed(config::PriceFeedConfig)
-
-Create a Chainlink price feed.
-
-# Arguments
-- `config::PriceFeedConfig`: The price feed configuration
-
-# Returns
-- `ChainlinkPriceFeed`: The created price feed
-"""
-function create_chainlink_feed(config::PriceFeedConfig)
+function create_chainlink_feed(config::PriceFeedConfig)::ChainlinkPriceFeed
     return ChainlinkPriceFeed(config)
 end
 
-# ===== Helper Functions =====
-
-"""
-    get_cache(feed::ChainlinkPriceFeed, key::String)
-
-Get a cached value if it exists and is not too old.
-
-# Arguments
-- `feed::ChainlinkPriceFeed`: The price feed instance
-- `key::String`: The cache key
-
-# Returns
-- `Union{Nothing, Any}`: The cached value or nothing
-"""
-function get_cache(feed::ChainlinkPriceFeed, key::String)
-    if haskey(feed.cache, key) && haskey(feed.last_updated, key)
-        age = Dates.value(now() - feed.last_updated[key]) / 1000  # Age in seconds
-        if age <= feed.config.cache_duration
-            return feed.cache[key]
-        end
-    end
-    return nothing
-end
-
-"""
-    set_cache(feed::ChainlinkPriceFeed, key::String, value::Any)
-
-Set a value in the cache.
-
-# Arguments
-- `feed::ChainlinkPriceFeed`: The price feed instance
-- `key::String`: The cache key
-- `value::Any`: The value to cache
-"""
-function set_cache(feed::ChainlinkPriceFeed, key::String, value::Any)
-    feed.cache[key] = value
-    feed.last_updated[key] = now()
-end
-
-"""
-    get_pair_key(base_asset::String, quote_asset::String)
-
-Get a key for a trading pair.
-
-# Arguments
-- `base_asset::String`: The base asset
-- `quote_asset::String`: The quote asset
-
-# Returns
-- `String`: The pair key
-"""
-function get_pair_key(base_asset::String, quote_asset::String)
-    return "$(uppercase(base_asset))/$(uppercase(quote_asset))"
-end
-
-"""
-    get_feed_address(feed::ChainlinkPriceFeed, base_asset::String, quote_asset::String)
-
-Get the Chainlink feed address for a trading pair.
-
-# Arguments
-- `feed::ChainlinkPriceFeed`: The price feed instance
-- `base_asset::String`: The base asset
-- `quote_asset::String`: The quote asset
-
-# Returns
-- `String`: The feed address
-"""
-function get_feed_address(feed::ChainlinkPriceFeed, base_asset::String, quote_asset::String)
-    pair_key = get_pair_key(base_asset, quote_asset)
-
-    if haskey(feed.feed_addresses, pair_key)
-        return feed.feed_addresses[pair_key]
+function _get_feed_details(feed::ChainlinkPriceFeed, base_asset::String, quote_asset::String)::Union{Tuple{String, Int}, Nothing}
+    pair_key = uppercase("$(base_asset)/$(quote_asset)")
+    # TODO: Use a dynamic registry based on feed.config.chain_id
+    # For now, hardcoding mainnet.
+    if feed.config.chain_id == 1 || isnothing(feed.config.chain_id) # Default to mainnet
+        return get(DEFAULT_CHAINLINK_FEEDS_MAINNET, pair_key, nothing)
     else
-        error("No Chainlink feed found for pair: $pair_key")
+        @warn "Chainlink feed registry not implemented for chain ID $(feed.config.chain_id). Pair $pair_key not found."
+        return nothing
     end
-end
-
-"""
-    make_api_request(feed::ChainlinkPriceFeed, endpoint::String, method::String="GET",
-                    data::Union{Dict, Nothing}=nothing)
-
-Make an API request to the Chainlink API.
-
-# Arguments
-- `feed::ChainlinkPriceFeed`: The price feed instance
-- `endpoint::String`: The API endpoint
-- `method::String`: The HTTP method
-- `data::Union{Dict, Nothing}`: The request data
-
-# Returns
-- `Dict`: The API response
-"""
-function make_api_request(feed::ChainlinkPriceFeed, endpoint::String, method::String="GET",
-                         data::Union{Dict, Nothing}=nothing)
-    # For now, we'll use a mock implementation
-    # In a real implementation, this would make actual HTTP requests to the Ethereum node
-    # to read from Chainlink price feed contracts
-
-    # Check cache first
-    cache_key = "api_$(endpoint)_$(method)_$(data)"
-    cached = get_cache(feed, cache_key)
-    if cached !== nothing
-        return cached
-    end
-
-    # Mock responses based on endpoint
-    if occursin("latestRoundData", endpoint)
-        # Extract pair from endpoint
-        parts = split(endpoint, "/")
-        address = parts[end-1]
-
-        # Find the pair for this address
-        pair = ""
-        for (key, value) in feed.feed_addresses
-            if value == address
-                pair = key
-                break
-            end
-        end
-
-        # Generate a realistic price based on the pair
-        price = 0.0
-        if pair == "ETH/USD"
-            price = 1800.0 + rand() * 100.0 - 50.0  # ETH price around $1800
-        elseif pair == "BTC/USD"
-            price = 30000.0 + rand() * 1000.0 - 500.0  # BTC price around $30000
-        elseif pair == "LINK/USD"
-            price = 7.0 + rand() * 0.5 - 0.25  # LINK price around $7
-        elseif pair == "DAI/USD" || pair == "USDC/USD" || pair == "USDT/USD"
-            price = 1.0 + rand() * 0.01 - 0.005  # Stablecoin price around $1
-        elseif pair == "AAVE/USD"
-            price = 80.0 + rand() * 5.0 - 2.5  # AAVE price around $80
-        elseif pair == "UNI/USD"
-            price = 5.0 + rand() * 0.3 - 0.15  # UNI price around $5
-        elseif pair == "SUSHI/USD"
-            price = 1.0 + rand() * 0.1 - 0.05  # SUSHI price around $1
-        elseif pair == "SNX/USD"
-            price = 2.5 + rand() * 0.2 - 0.1  # SNX price around $2.5
-        else
-            price = 10.0 + rand() * 1.0 - 0.5  # Default price around $10
-        end
-
-        # Mock Chainlink latestRoundData response
-        response = Dict(
-            "roundId" => Int(floor(time() / 3600)),  # Round ID based on current hour
-            "answer" => price * 10^8,  # Chainlink prices are scaled by 10^8
-            "startedAt" => time() - 3600,  # Started an hour ago
-            "updatedAt" => time() - rand() * 600,  # Updated within the last 10 minutes
-            "answeredInRound" => Int(floor(time() / 3600))
-        )
-    elseif occursin("getRoundData", endpoint)
-        # Extract round ID from endpoint
-        parts = split(endpoint, "/")
-        address = parts[end-2]
-        round_id = parse(Int, parts[end])
-
-        # Find the pair for this address
-        pair = ""
-        for (key, value) in feed.feed_addresses
-            if value == address
-                pair = key
-                break
-            end
-        end
-
-        # Generate a realistic price based on the pair and round ID
-        # We'll use the round ID to generate a price that changes over time
-        base_price = 0.0
-        if pair == "ETH/USD"
-            base_price = 1800.0
-        elseif pair == "BTC/USD"
-            base_price = 30000.0
-        elseif pair == "LINK/USD"
-            base_price = 7.0
-        elseif pair == "DAI/USD" || pair == "USDC/USD" || pair == "USDT/USD"
-            base_price = 1.0
-        elseif pair == "AAVE/USD"
-            base_price = 80.0
-        elseif pair == "UNI/USD"
-            base_price = 5.0
-        elseif pair == "SUSHI/USD"
-            base_price = 1.0
-        elseif pair == "SNX/USD"
-            base_price = 2.5
-        else
-            base_price = 10.0
-        end
-
-        # Add some randomness based on the round ID
-        Random.seed!(round_id)
-        price = base_price * (1.0 + (rand() * 0.1 - 0.05))
-
-        # Mock Chainlink getRoundData response
-        response = Dict(
-            "roundId" => round_id,
-            "answer" => price * 10^8,  # Chainlink prices are scaled by 10^8
-            "startedAt" => time() - (Int(floor(time() / 3600)) - round_id) * 3600,
-            "updatedAt" => time() - (Int(floor(time() / 3600)) - round_id) * 3600 + 600,
-            "answeredInRound" => round_id
-        )
-    elseif occursin("aggregator", endpoint)
-        # Mock Chainlink aggregator info
-        response = Dict(
-            "decimals" => 8,
-            "description" => "Price Feed",
-            "version" => 4,
-            "latestRound" => Int(floor(time() / 3600))
-        )
-    else
-        # Default mock response
-        response = Dict("error" => "Endpoint not implemented")
-    end
-
-    # Cache the response
-    set_cache(feed, cache_key, response)
-
-    return response
 end
 
 # ===== Implementation of PriceFeedBase Interface =====
 
-function PriceFeedBase.get_latest_price(feed::ChainlinkPriceFeed, base_asset::String, quote_asset::String)
-    # Get the feed address
-    address = get_feed_address(feed, base_asset, quote_asset)
+function PriceFeedBase.get_latest_price(feed::ChainlinkPriceFeed, base_asset::String, quote_asset::String)::PricePoint
+    pair_key = uppercase("$(base_asset)/$(quote_asset)")
 
-    # Make the API request
-    response = make_api_request(feed, "feeds/$(address)/latestRoundData")
+    # Check cache
+    if haskey(feed.price_cache, pair_key)
+        cached_price_point, expiry_time = feed.price_cache[pair_key]
+        if now(UTC) < expiry_time
+            @debug "Cache hit for $pair_key on Chainlink feed."
+            return cached_price_point
+        end
+    end
 
-    # Extract the price
-    price = response["answer"] / 10^8  # Chainlink prices are scaled by 10^8
+    feed_details = _get_feed_details(feed, base_asset, quote_asset)
+    if isnothing(feed_details)
+        error("Chainlink feed for $pair_key not found in registry for chain ID $(feed.config.chain_id).")
+    end
+    feed_address, price_decimals = feed_details
 
-    # Create a price point
-    return PricePoint(
-        unix2datetime(response["updatedAt"]),
-        price
-    )
+    # Establish connection to the blockchain
+    # The rpc_url and network name should be part of feed.config
+    # For Chainlink, network name is usually derived from chain_id
+    network_name = feed.config.chain_id == 1 ? "ethereum" : "unknown_chain_$(feed.config.chain_id)" # Simplification
+    
+    connection_params = Dict("network" => network_name, "endpoint" => feed.config.rpc_url)
+    conn_details = Blockchain.connect(network=network_name, endpoint_url=feed.config.rpc_url)
+    if !get(conn_details, "connected", false)
+        error("Failed to connect to blockchain RPC for Chainlink feed: $(feed.config.rpc_url). Error: $(get(conn_details, "error", "Unknown connection error"))")
+    end
+
+    # Function signature for latestRoundData(): "latestRoundData()"
+    # The refined `encode_function_call_abi` expects a Vector{Tuple{Any, String}} for args.
+    # For no arguments, pass an empty vector of this type.
+    data_payload = EthereumClient.encode_function_call_abi("latestRoundData()", Vector{Tuple{Any, String}}())
+    
+    hex_result = Blockchain.eth_call_generic(feed_address, data_payload, conn_details)
+
+    if hex_result == "0x" || length(hex_result) < (2 + 5 * 64) # Expecting 5 uint256/int256/uint80 values
+        @error "Invalid or empty response from Chainlink contract for $pair_key: $hex_result"
+        # Fallback or error
+        return PricePoint(now(UTC), -1.0) # Indicate error
+    end
+    
+    # Decode the result using placeholder ABI decoder
+    # latestRoundData() returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
+    # A real ABI decoder would parse types from the ABI definition.
+    # For our placeholder, we provide type strings.
+    output_abi_types = ["uint80", "int256", "uint256", "uint256", "uint80"]
+    decoded_results = EthereumClient.decode_function_result_abi(hex_result, output_abi_types)
+
+    if length(decoded_results) < 5
+        @error "Failed to decode Chainlink response for $pair_key. Expected 5 results, got $(length(decoded_results)). Response: $hex_result"
+        return PricePoint(now(UTC), -1.0, volume=-1.0) # Indicate error, perhaps with a specific error field
+    end
+
+    # roundId_val = decoded_results[1] # Should be BigInt
+    answer_val = decoded_results[2]    # Should be BigInt (can be negative for some feeds, though not typical for price)
+    # startedAt_val = decoded_results[3] # Should be BigInt
+    updatedAt_unix = decoded_results[4] # Should be BigInt
+    # answeredInRound_val = decoded_results[5] # Should be BigInt
+
+    # Ensure types are as expected from decoder before arithmetic
+    if !(isa(answer_val, BigInt) && isa(updatedAt_unix, BigInt))
+        @error "Decoded Chainlink values have unexpected types. Answer: $(typeof(answer_val)), UpdatedAt: $(typeof(updatedAt_unix))"
+        return PricePoint(now(UTC), -1.0, volume=-1.0) # Indicate error
+    end
+
+    price = Float64(answer_val) / (10^price_decimals)
+    timestamp_dt = unix2datetime(Float64(updatedAt_unix))
+
+    price_point = PricePoint(timestamp_dt, price) # volume, ohlc are default 0.0
+    
+    # Update cache
+    cache_expiry = now(UTC) + Second(feed.config.cache_duration)
+    feed.price_cache[pair_key] = (price_point, cache_expiry)
+    
+    return price_point
 end
 
 function PriceFeedBase.get_historical_prices(feed::ChainlinkPriceFeed, base_asset::String, quote_asset::String;
-                                           interval::String="1d", limit::Int=100, start_time::DateTime=DateTime(0),
-                                           end_time::DateTime=now())
-    # Get the feed address
-    address = get_feed_address(feed, base_asset, quote_asset)
+                                           interval::String="1d", limit::Int=100, 
+                                           start_time::Union{DateTime, Nothing}=nothing,
+                                           end_time::Union{DateTime, Nothing}=nothing)::PriceData
+    # Chainlink on-chain feeds primarily provide latest price. Historical data typically requires
+    # iterating through `getRoundData(roundId)` or using an external service that archives this data.
+    # This is a simplified implementation that might only fetch recent rounds or just the latest.
+    @warn "get_historical_prices for ChainlinkFeed is simplified and may not provide extensive history."
+    
+    latest_price_point = get_latest_price(feed, base_asset, quote_asset)
+    
+    # For now, return only the latest price point as historical data
+    # A full implementation would need to query past rounds.
+    points = [latest_price_point]
 
-    # Get the latest round
-    latest_response = make_api_request(feed, "feeds/$(address)/latestRoundData")
-    latest_round = latest_response["roundId"]
-
-    # Calculate the starting round based on the interval and limit
-    interval_seconds = 0
-    if interval == "1h"
-        interval_seconds = 3600
-    elseif interval == "1d"
-        interval_seconds = 86400
-    elseif interval == "1w"
-        interval_seconds = 604800
-    else
-        error("Unsupported interval: $interval")
-    end
-
-    # Calculate the number of rounds to go back
-    rounds_back = min(limit, Int(floor(latest_round / (interval_seconds / 3600))))
-
-    # Get historical prices
-    points = PricePoint[]
-    for i in 0:rounds_back-1
-        round_id = latest_round - i * Int(interval_seconds / 3600)
-
-        # Skip rounds before start_time
-        round_time = unix2datetime(time() - i * interval_seconds)
-        if round_time < start_time
-            continue
-        end
-
-        # Skip rounds after end_time
-        if round_time > end_time
-            continue
-        end
-
-        # Make the API request
-        response = make_api_request(feed, "feeds/$(address)/getRoundData/$(round_id)")
-
-        # Extract the price
-        price = response["answer"] / 10^8  # Chainlink prices are scaled by 10^8
-
-        # Create a price point
-        push!(points, PricePoint(
-            unix2datetime(response["updatedAt"]),
-            price
-        ))
-    end
-
-    # Create price data
-    return PriceData(
-        uppercase(base_asset),
-        uppercase(quote_asset),
-        "Chainlink",
-        interval,
-        points
-    )
+    return PriceData(uppercase(base_asset), uppercase(quote_asset), "Chainlink-"*feed.config.name, interval, points)
 end
 
-function PriceFeedBase.get_price_feed_info(feed::ChainlinkPriceFeed)
+function PriceFeedBase.get_price_feed_info(feed::ChainlinkPriceFeed)::Dict{String, Any}
     return Dict(
-        "name" => feed.config.name,
-        "type" => "Chainlink",
-        "supported_pairs" => collect(keys(feed.feed_addresses)),
-        "base_url" => feed.config.base_url,
-        "cache_duration" => feed.config.cache_duration
+        "provider_name" => "Chainlink",
+        "config_name" => feed.config.name,
+        "rpc_url" => feed.config.rpc_url,
+        "chain_id" => feed.config.chain_id,
+        "cache_duration_seconds" => feed.config.cache_duration,
+        "supported_pairs_on_this_instance" => list_supported_pairs(feed) # Based on its internal registry
     )
 end
 
-function PriceFeedBase.list_supported_pairs(feed::ChainlinkPriceFeed)
-    pairs = Tuple{String, String}[]
-
-    for pair_key in keys(feed.feed_addresses)
-        base_asset, quote_asset = split(pair_key, "/")
-        push!(pairs, (base_asset, quote_asset))
+function PriceFeedBase.list_supported_pairs(feed::ChainlinkPriceFeed)::Vector{Tuple{String, String}}
+    # This should reflect the pairs available in the feed's specific registry for its chain_id
+    # For now, using the hardcoded mainnet one as an example.
+    registry = DEFAULT_CHAINLINK_FEEDS_MAINNET # Should be dynamic based on feed.config.chain_id
+    
+    supported = Vector{Tuple{String, String}}()
+    for pair_str in keys(registry)
+        parts = split(pair_str, "/")
+        if length(parts) == 2
+            push!(supported, (parts[1], parts[2]))
+        end
     end
-
-    return pairs
+    return supported
 end
 
-end # module
+end # module ChainlinkFeed
