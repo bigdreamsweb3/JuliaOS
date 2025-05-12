@@ -18,49 +18,88 @@ function _get_or_create_feed_instance(provider_name::String, params::Dict)::Unio
     # A better system would pre-configure feeds or have a more persistent cache.
     
     lock(DEFAULT_PRICE_FEEDS_LOCK) do
-        # Simple cache based on provider_name and a hash of relevant params (e.g. chain_id, rpc_url)
-        # For simplicity, just using provider_name as key for now.
-        # This means only one config per provider type is cached here.
-        cache_key = provider_name 
+        # Construct a more specific cache key based on relevant config parameters
+        # Relevant params might include chain_id, rpc_url (for chainlink), api_key (for others)
+        # This helps differentiate instances of the same provider type with different configs.
+        
+        # Extract key parameters for cache key generation
+        # Ensure consistent types for cache key components (e.g., string for chain_id)
+        chain_id_str = string(get(params, "chain_id", provider_name == "chainlink" ? "1" : "default_chain"))
+        api_key_param = get(params, "api_key", "")
+        rpc_url_param = get(params, "rpc_url", "") # Relevant for chainlink or custom RPC-based feeds
+        base_url_param = get(params, "base_url", "") # Relevant for HTTP API based feeds
+
+        # Create a composite cache key. Hashing could be used for very long/complex keys.
+        # For now, a delimited string.
+        cache_key_parts = [
+            lowercase(provider_name),
+            "chain:$(chain_id_str)",
+            # Only include api_key/rpc_url/base_url in key if they are non-empty,
+            # as they might not be applicable to all providers or might use defaults.
+            # However, if they *are* provided, they define a distinct instance.
+        ]
+        !isempty(api_key_param) && push!(cache_key_parts, "apikeyhash:" * string(hash(api_key_param))) # Hash API key
+        !isempty(rpc_url_param) && push!(cache_key_parts, "rpcurl:" * rpc_url_param)
+        !isempty(base_url_param) && push!(cache_key_parts, "baseurl:" * base_url_param)
+        
+        cache_key = join(cache_key_parts, "_")
+
         if haskey(DEFAULT_PRICE_FEEDS, cache_key) && !isnothing(DEFAULT_PRICE_FEEDS[cache_key])
-             # TODO: Check if params match the cached instance's config; if not, recreate.
+            # TODO: A deeper check could compare all `params` with the cached instance's actual config.
+            # For now, if key matches, assume config matches. This relies on a good cache_key.
+            @debug "Returning cached price feed instance for key: $cache_key"
             return DEFAULT_PRICE_FEEDS[cache_key]
         end
 
+        @debug "Creating new price feed instance for key: $cache_key"
         # Default config parameters if not provided in request
-        # These should ideally come from a secure application configuration file.
-        # Corrected: provider_name was used instead of feed_provider_name
-        default_rpc_url = get(params, "rpc_url", provider_name == "chainlink" ? "https://mainnet.infura.io/v3/YOUR_INFURA_KEY" : "")
-        default_chain_id = get(params, "chain_id", provider_name == "chainlink" ? 1 : nothing)
+        # These should ideally come from a secure application configuration file for production.
         
-        config_params = Dict{Symbol, Any}(
-            :name => get(params, "config_name", provider_name), # Config name can be distinct
-            :api_key => get(params, "api_key", ""),
-            :base_url => get(params, "base_url", ""),
-            :rpc_url => default_rpc_url,
-            :chain_id => default_chain_id,
-            :cache_duration => get(params, "cache_duration", 60) # Ensure this is Int
+        # Use extracted params for consistency, falling back to defaults if they were empty
+        final_rpc_url = !isempty(rpc_url_param) ? rpc_url_param : (provider_name == "chainlink" ? "https://mainnet.infura.io/v3/YOUR_INFURA_KEY" : "")
+        final_chain_id_parsed = tryparse(Int, chain_id_str)
+        final_chain_id = !isnothing(final_chain_id_parsed) ? final_chain_id_parsed : (provider_name == "chainlink" ? 1 : nothing)
+
+        config_name_param = get(params, "config_name", provider_name * "_" * chain_id_str) # More unique default name
+
+        config_dict = Dict{Symbol, Any}(
+            :name => config_name_param, 
+            :api_key => api_key_param, # Already extracted
+            :base_url => base_url_param, # Already extracted
+            :rpc_url => final_rpc_url,
+            :chain_id => final_chain_id
         )
-        # Ensure cache_duration is Int
-        if isa(config_params[:cache_duration], String)
-            config_params[:cache_duration] = tryparse(Int, config_params[:cache_duration]) !== nothing ? parse(Int, config_params[:cache_duration]) : 60
-        elseif !isa(config_params[:cache_duration], Int)
-            config_params[:cache_duration] = 60 # Fallback
+        
+        # Handle cache_duration separately as it's not part of the cache key logic directly
+        cache_duration_param = get(params, "cache_duration", "60") # Default to string "60"
+        parsed_cache_duration = tryparse(Int, string(cache_duration_param)) # Ensure it's string before parse
+        config_dict[:cache_duration] = isnothing(parsed_cache_duration) ? 60 : parsed_cache_duration
+
+
+        # Remove keys with empty string values if the PriceFeedConfig constructor handles them as optional,
+        # but ensure :name is always present. Also, chain_id can be nothing for some providers.
+        # rpc_url, api_key, base_url might be legitimately empty if not used by a provider.
+        final_config_params = Dict{Symbol, Any}()
+        for (k,v) in config_dict
+            if k == :name || k == :cache_duration # Always include these
+                final_config_params[k] = v
+            elseif k == :chain_id # Include if not nothing
+                 !isnothing(v) && (final_config_params[k] = v)
+            elseif isa(v, String) && !isempty(v) # Include non-empty strings
+                final_config_params[k] = v
+            elseif !isa(v, String) && !isnothing(v) # Include other non-nothing, non-string types
+                final_config_params[k] = v
+            end
         end
-
-
-        # Remove keys with empty string values if the PriceFeedConfig constructor handles them as optional
-        # but ensure :name is always present for the constructor.
-        filter!((k,v) -> (k == :name) || !(v isa String && isempty(v)), config_params)
-
-
+        
         try
-            config = PriceFeedBase.PriceFeedConfig(;config_params...)
-            instance = PriceFeed.create_price_feed(provider_name, config)
+            config_obj = PriceFeedBase.PriceFeedConfig(;final_config_params...)
+            instance = PriceFeed.create_price_feed(provider_name, config_obj)
             DEFAULT_PRICE_FEEDS[cache_key] = instance
+            @info "Created and cached new price feed instance for $provider_name with key $cache_key"
             return instance
         catch e
-            @error "Failed to create or get price feed instance for $provider_name" error=e params=params
+            @error "Failed to create price feed instance for $provider_name with key $cache_key" error=e params=final_config_params
             return nothing
         end
     end

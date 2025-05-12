@@ -18,8 +18,7 @@ using DataStructures # OrderedDict + PriorityQueue + CircularBuffer (CircularBuf
 # JSON3 and Atomic are used by Persistence, but might be needed here if
 # Agent struct serialization/deserialization logic was directly in this file.
 # For now, Persistence handles it.
-# Need a cron library for cron scheduling - add dependency like Cron.jl
-# using Cron # Example dependency for cron scheduling
+using Cron # Added for cron scheduling
 
 # ----------------------------------------------------------------------
 # IMPORT OTHER MODULES
@@ -55,7 +54,11 @@ export Agent, AgentConfig, AgentStatus, AgentType,
        # Export Abstract Types for Pluggability (NEW)
        AbstractAgentMemory, AbstractAgentQueue, AbstractLLMIntegration,
        # Export Default Pluggable Implementations (for users to reference concrete types)
-       OrderedDictAgentMemory, PriorityAgentQueue, DefaultLLMIntegration
+       OrderedDictAgentMemory, PriorityAgentQueue, DefaultLLMIntegration,
+       # Export event triggering function
+       trigger_agent_event,
+       # Export fitness evaluation function
+       evaluateAgentFitness
 
 
 # ----------------------------------------------------------------------
@@ -708,18 +711,26 @@ function _process_skill!(ag::Agent, sstate::SkillState)
         elseif sk.schedule.type == :cron
              # Placeholder for cron scheduling logic
              # Requires a cron parsing/checking library (e.g. Cron.jl)
-             # Example check (requires external library):
-             # try
-             #     if Cron.is_due(sk.schedule.value, sstate.last_exec, current_time)
-             #         should_run = true
-             #     end
-             # catch e
-             #     @error "Error checking cron schedule for skill '$(sk.name)'" exception=(e, catch_backtrace())
-             #     # Decide if a cron error should prevent future runs or set agent to ERROR
-             # end
-             # For now, cron schedules won't run without implementation
-             @debug "Cron scheduling not active for skill '$(sk.name)'."
-             should_run = false # Placeholder
+            # Cron scheduling logic using Cron.jl
+            # sk.schedule.value is expected to be the cron string e.g. "0 * * * *"
+            if isa(sk.schedule.value, String)
+                try
+                    # Cron.isdue checks if the cron expression is due between last_exec and current_time
+                    # If last_exec is very old, it might trigger multiple times if not handled carefully by skill logic
+                    # or by ensuring last_exec is updated promptly.
+                    # Cron.jl's isdue typically checks if *any* scheduled time falls in (last_exec, current_time].
+                    if Cron.isdue(sk.schedule.value, sstate.last_exec) # Check against last_exec time
+                        should_run = true
+                    end
+                catch e
+                    @error "Error parsing or checking cron schedule string '$(sk.schedule.value)' for skill '$(sk.name)'" exception=(e, catch_backtrace())
+                    # Consider setting agent to ERROR or disabling this skill if cron string is persistently bad.
+                    should_run = false 
+                end
+            else
+                @warn "Cron schedule value for skill '$(sk.name)' is not a string. Cron scheduling skipped."
+                should_run = false
+            end
         elseif sk.schedule.type == :event
              # Event-based skills are not run by the scheduler loop,
              # they would be triggered by an external event handler (e.g., in Swarm module)
@@ -955,12 +966,15 @@ function _agent_loop(ag::Agent)
         lock(AGENTS_LOCK) do # _save_state requires AGENTS_LOCK
             Persistence._save_state()
         end
+
+        # Call the separate auto-restart handler function
+        _handle_auto_restart(ag)
     end
 end
 
 
 # ----------------------------------------------------------------------
-# LIFE‑CYCLE (Pause/Resume now works with Condition) -------------------
+# LIFE-CYCLE (Pause/Resume now works with Condition) -------------------
 # ----------------------------------------------------------------------
 """
     startAgent(id::String)::Bool
@@ -1819,6 +1833,58 @@ function llm_chat_ability(ag::Agent, task::Dict)
     return Dict("answer" => answer)
 end
 
+"""
+    evaluate_fitness_ability(agent::Agent, task::Dict)
+
+An ability for agents to evaluate a fitness/objective function for a given position (candidate solution).
+This is intended to be called by the Swarm module for distributed optimization.
+
+Task dictionary should contain:
+- `position_data::Vector{Float64}`: The candidate solution to evaluate.
+- `objective_function_name::String`: The name of the objective function (registered in Swarms.jl).
+- `swarm_id::String` (optional, for context/logging)
+- `task_id_original::String` (optional, for context/logging, the ID of the swarm's evaluation task)
+"""
+function evaluate_fitness_ability(ag::Agent, task::Dict)
+    position_data = get(task, "position_data", nothing)
+    obj_func_name = get(task, "objective_function_name", nothing)
+    swarm_id_context = get(task, "swarm_id", "N/A")
+
+    if isnothing(position_data) || !isa(position_data, Vector{Float64})
+        @error "Agent $(ag.id) evaluate_fitness: Missing or invalid 'position_data'."
+        return Dict("error" => "Missing or invalid 'position_data'", "fitness" => nothing)
+    end
+    if isnothing(obj_func_name) || !isa(obj_func_name, String)
+        @error "Agent $(ag.id) evaluate_fitness: Missing or invalid 'objective_function_name'."
+        return Dict("error" => "Missing or invalid 'objective_function_name'", "fitness" => nothing)
+    end
+
+    # Get the actual objective function. This relies on Swarms.jl having registered it.
+    # This creates a dependency: Agents.jl needs to be able to call a function from Swarms.jl
+    # or the objective function registry needs to be accessible globally or passed around.
+    # For now, assume Swarms.get_objective_function_by_name is callable.
+    # This might require `using ..Swarms` or `import ..Swarms: get_objective_function_by_name`
+    # at the top of Agents.jl, or making the registry globally accessible.
+    # Let's assume `Swarm.get_objective_function_by_name` is available via the `import .Swarm`
+    
+    # Ensure Swarm module and its function are accessible
+    obj_fn = Swarm.get_objective_function_by_name(obj_func_name) # Using Swarm.
+    if obj_fn === nothing || !isa(obj_fn, Function) # Check if it's a real function
+        @error "Agent $(ag.id) evaluate_fitness: Objective function '$obj_func_name' not found or not a function."
+        return Dict("error" => "Objective function '$obj_func_name' not found.", "fitness" => nothing)
+    end
+
+    @debug "Agent $(ag.id) evaluating fitness for swarm $swarm_id_context, objective '$obj_func_name'."
+    try
+        fitness_value = obj_fn(position_data)
+        # No need to update last_activity here, executeAgentTask handles it.
+        return Dict("fitness" => fitness_value, "position_evaluated" => position_data)
+    catch e
+        @error "Agent $(ag.id) error during fitness evaluation for objective '$obj_func_name'" exception=(e, catch_backtrace())
+        return Dict("error" => "Error during fitness evaluation: $(string(e))", "fitness" => nothing)
+    end
+end
+
 
 # ----------------------------------------------------------------------
 # Module Initialization
@@ -1835,10 +1901,235 @@ function __init__()
     # Register default abilities and skills
     register_ability("ping", ping_ability)
     register_ability("llm_chat", llm_chat_ability)
+    register_ability("evaluate_fitness", evaluate_fitness_ability) # Register the new ability
+
     # Register other default skills if any (e.g., periodic cleanup)
     # register_skill("periodic_cleanup", periodic_cleanup_skill; schedule=Schedule(:periodic, 3600)) # Example periodic skill
 
     @info "Agents.jl core module initialized."
+end
+
+
+# ----------------------------------------------------------------------
+# EVENT TRIGGERING (NEW)
+# ----------------------------------------------------------------------
+"""
+    trigger_agent_event(agent_id::String, event_name::String, event_data::Dict=Dict())
+
+Triggers event-based skills for a specific agent.
+
+# Arguments
+- `agent_id::String`: The ID of the agent to trigger the event for.
+- `event_name::String`: The name of the event.
+- `event_data::Dict`: Optional data associated with the event, passed to the skill function.
+
+# Returns
+- `Vector{Dict}`: A list of results from executed skills, or an error dict if agent not found.
+                  Each skill result dict contains `skill_name` and `result` or `error`.
+"""
+function trigger_agent_event(agent_id::String, event_name::String, event_data::Dict=Dict())
+    ag = getAgent(agent_id)
+    if isnothing(ag)
+        @warn "trigger_agent_event: Agent $agent_id not found."
+        return [Dict("error" => "Agent $agent_id not found")]
+    end
+
+    # Check if agent is in a runnable state (e.g., RUNNING)
+    # Event-driven skills might still be processed if PAUSED, depending on design.
+    # For now, let's allow triggering even if PAUSED, as the skill execution itself
+    # might be quick or the event important. If agent is STOPPED or ERROR, skip.
+    if ag.status == STOPPED || ag.status == ERROR
+        @warn "trigger_agent_event: Agent $agent_id is in status $(ag.status). Event '$event_name' not processed."
+        return [Dict("error" => "Agent $agent_id is in status $(ag.status), event '$event_name' not processed.")]
+    end
+
+    results = []
+    executed_skills_for_event = 0
+
+    lock(ag.lock) do # Ensure thread-safe access to agent's skills and state
+        current_time = now()
+        for (skill_name, sstate) in ag.skills
+            sk = sstate.skill
+            if sk.schedule !== nothing && sk.schedule.type == :event && sk.schedule.value == event_name
+                @info "Agent $(ag.id): Triggering event skill '$(sk.name)' for event '$event_name'."
+                skill_result = Dict("skill_name" => sk.name)
+                try
+                    # Event-driven skills receive the agent and event_data
+                    # The skill function `sk.fn` should be defined as `fn(agent::Agent, event_payload::Dict)`
+                    output = sk.fn(ag, event_data) 
+                    skill_result["result"] = output
+                    sstate.xp += 0.5 # Smaller XP gain for event-driven, or make configurable
+                    sstate.last_exec = current_time
+                    ag.last_activity = current_time
+                    AgentMetrics.record_metric(ag.id, "skills_executed_event", 1; type=AgentMetrics.COUNTER, tags=Dict("skill_name" => sk.name, "event_name" => event_name))
+                    executed_skills_for_event += 1
+                catch e
+                    @error "Error executing event skill '$(sk.name)' for agent $(ag.id) on event '$event_name'" exception=(e, catch_backtrace())
+                    skill_result["error"] = string(e)
+                    sstate.xp -= 1 
+                    AgentMetrics.record_metric(ag.id, "skill_errors_event", 1; type=AgentMetrics.COUNTER, tags=Dict("skill_name" => sk.name, "event_name" => event_name))
+                    # Optionally, set agent to ERROR state if event skill fails critically
+                    # ag.status = ERROR; ag.last_error = e; ag.last_error_timestamp = now();
+                end
+                push!(results, skill_result)
+            end
+        end
+    end # Release agent lock
+
+    if executed_skills_for_event == 0
+        @debug "Agent $(ag.id): No skills registered for event '$event_name'."
+        # Return an empty list or a message indicating no skills were triggered
+        # For consistency, if agent was found but no skills, return empty list of results.
+    end
+    
+    return results
+end
+
+# --- Auto-restart logic (called from _agent_loop's finally block) ---
+function _handle_auto_restart(ag::Agent)
+    # This function is called from the finally block of _agent_loop.
+    # The AGENTS_LOCK is NOT held here, but the agent's specific lock (ag.lock) might be,
+    # or might have been released if the loop exited cleanly.
+    # We need to re-acquire ag.lock to safely check and modify its status for restart.
+
+    should_attempt_restart = false
+    lock(ag.lock) do # Safely read status
+        if AUTO_RESTART[] && ag.status == ERROR
+            should_attempt_restart = true
+        end
+    end
+
+    if should_attempt_restart
+        @warn "Agent $(ag.name) ($(ag.id)) ended in ERROR state. Attempting auto-restart as per configuration (AUTO_RESTART = $(AUTO_RESTART[]))."
+        
+        # Add a small delay before restarting
+        sleep(get_config("agent.auto_restart_delay_seconds", 5)) # New config or hardcode
+
+        # Reset error state and attempt to restart
+        # The startAgent function handles its own locking and sets status to INITIALIZING/RUNNING.
+        # It also prevents starting if already in ERROR state, so we must clear the error first.
+        lock(ag.lock) do
+            ag.last_error = nothing
+            ag.last_error_timestamp = nothing
+            # We don't change ag.status here; startAgent will handle it.
+            # If startAgent fails, the agent might re-enter ERROR state.
+            # A more robust system would have max restart attempts.
+        end
+        
+        # Run startAgent asynchronously to avoid blocking the finally block of the original task,
+        # especially if startAgent itself involves waiting or complex operations.
+        @async begin
+            try
+                success = startAgent(ag.id) # startAgent handles its own locking
+                if success
+                    @info "Agent $(ag.name) ($(ag.id)) auto-restarted successfully."
+                else
+                    @error "Agent $(ag.name) ($(ag.id)) auto-restart attempt failed. Agent may remain in ERROR or STOPPED state."
+                    # If startAgent fails, it might set status to ERROR again.
+                    # The agent's loop will not run again unless startAgent succeeds.
+                    # We might need to log this failure more persistently or alert.
+                end
+            catch restart_ex
+                @error "Exception during asynchronous auto-restart attempt for agent $(ag.name) ($ag.id)" exception=(restart_ex, catch_backtrace())
+                # Ensure agent status reflects this new error if restart itself fails badly
+                lock(ag.lock) do
+                    ag.status = ERROR
+                    ag.last_error = restart_ex
+                    ag.last_error_timestamp = now()
+                end
+                # Persist this critical failure state
+                lock(AGENTS_LOCK) do
+                    Persistence._save_state()
+                end
+            end
+        end
+    end
+end
+# --- End auto-restart logic ---
+
+# ----------------------------------------------------------------------
+# AGENT FITNESS EVALUATION (NEW - for Swarm integration)
+# ----------------------------------------------------------------------
+"""
+    evaluateAgentFitness(agent_id::String, objective_function_id::String, candidate_solution::Any, problem_context::Dict{String,Any})::Dict{String, Any}
+
+Allows an agent to evaluate the fitness of a given candidate solution using a specified objective function.
+This is intended to be called by a Swarm Manager or other coordinating entity.
+
+# Arguments
+- `agent_id::String`: The ID of the agent to perform the evaluation.
+- `objective_function_id::String`: Identifier for the objective function (must be registered, e.g., in Swarm module).
+- `candidate_solution::Any`: The solution to evaluate (e.g., `Vector{Float64}`). Type checking/conversion might be needed.
+- `problem_context::Dict{String,Any}`: Additional context required by the objective function.
+
+# Returns
+- `Dict` with `success::Bool` and `fitness_value::Float64` or `error::String`.
+"""
+function evaluateAgentFitness(agent_id::String, objective_function_id::String, candidate_solution::Any, problem_context::Dict{String,Any})::Dict{String, Any}
+    ag = getAgent(agent_id)
+    if isnothing(ag)
+        return Dict("success" => false, "error" => "Agent $agent_id not found")
+    end
+
+    # Lock the agent to check status and prevent interference if it were to run other tasks concurrently (though this is direct call)
+    lock(ag.lock) do
+        # Agent should ideally be RUNNING or IDLE (if IDLE is a state where it can accept direct work)
+        # For now, let's assume RUNNING is the primary state for such direct evaluations.
+        # If an agent is PAUSED, it shouldn't actively compute. If STOPPED or ERROR, it definitely can't.
+        if ag.status != RUNNING
+            return Dict("success" => false, "error" => "Agent $agent_id is not in RUNNING state (current: $(ag.status)). Cannot evaluate fitness.")
+        end
+
+        # Retrieve the objective function (e.g., from Swarm module's registry)
+        # This relies on Swarm.jl providing such a function.
+        obj_fn = Swarm.get_objective_function_by_name(objective_function_id)
+        if obj_fn === nothing || !isa(obj_fn, Function)
+            return Dict("success" => false, "error" => "Objective function '$objective_function_id' not found or is not a callable function.")
+        end
+
+        @debug "Agent $(ag.id) evaluating fitness for objective '$objective_function_id'."
+        try
+            # Type assertion/conversion for candidate_solution might be needed here
+            # For now, assume obj_fn can handle `candidate_solution::Any` or it's already correct type.
+            # Objective functions might also need the problem_context.
+            # The signature of registered objective functions should be `fn(solution, context)`
+            # or simply `fn(solution)` if context is not always needed or handled differently.
+            # Let's assume for now that objective functions registered via Swarm.get_objective_function_by_name
+            # expect `fn(solution_vector)` and potentially use `problem_context` if passed.
+            # A more robust system would have a clear contract for objective function signatures.
+
+            # Example: If objective functions always expect Vector{Float64} and a context Dict:
+            # if !isa(candidate_solution, Vector{Float64})
+            #     return Dict("success" => false, "error" => "Invalid candidate_solution format. Expected Vector{Float64}.")
+            # end
+            # fitness_value = obj_fn(candidate_solution, problem_context)
+
+            # Simpler: assume obj_fn takes the candidate_solution directly.
+            # If it needs context, it must be designed to fetch it or be partially applied with it.
+            # The current SwarmBase.OptimizationProblem's obj_func takes only the solution vector.
+            # So, we should adhere to that for functions retrieved via Swarm module.
+            if !isa(candidate_solution, Vector{Float64}) && !isa(candidate_solution, Vector{<:Number}) # Allow Vector of any Number subtype
+                 @warn "Candidate solution for '$objective_function_id' is not Vector{<:Number}. Type: $(typeof(candidate_solution)). Attempting conversion or direct pass."
+                 # Attempt conversion if it's a generic vector of numbers
+                 try
+                     candidate_solution = convert(Vector{Float64}, candidate_solution)
+                 catch conv_err
+                     return Dict("success" => false, "error" => "Invalid candidate_solution format. Expected Vector{<:Number}. Conversion failed: $conv_err")
+                 end
+            end
+
+            fitness_value = obj_fn(candidate_solution) # Pass only solution as per current Swarm obj_fn signature
+
+            ag.last_activity = now() # Mark activity
+            AgentMetrics.record_metric(ag.id, "fitness_evaluations", 1; type=AgentMetrics.COUNTER, tags=Dict("objective_function" => objective_function_id))
+            
+            return Dict("success" => true, "fitness_value" => fitness_value)
+        catch e
+            @error "Agent $(ag.id) error during fitness evaluation for objective '$objective_function_id'" exception=(e, catch_backtrace())
+            AgentMetrics.record_metric(ag.id, "fitness_evaluation_errors", 1; type=AgentMetrics.COUNTER, tags=Dict("objective_function" => objective_function_id))
+            return Dict("success" => false, "error" => "Error during fitness evaluation: $(string(e))")
+        end
+    end # Release agent lock
 end
 
 

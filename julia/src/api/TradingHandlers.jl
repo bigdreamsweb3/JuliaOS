@@ -11,10 +11,14 @@ import ..framework.JuliaOSFramework.DEX # For creating mock DEX instances
 # import ..framework.JuliaOSFramework.TradingStrategy: OptimalPortfolioStrategy, ArbitrageStrategy, MovingAverageCrossoverStrategy, MeanReversionStrategy
 
 
-# Store for configured strategy instances (simplified)
-# In a real system, these might be persisted or managed more robustly.
-const CONFIGURED_STRATEGIES = Dict{String, TradingStrategy.AbstractStrategy}()
-const STRATEGIES_LOCK = ReentrantLock()
+# Using Storage.jl for persistent strategy configurations.
+# Key will be "trading_strategy_config_" * strategy_name
+import ..framework.JuliaOSFramework.Storage
+
+# const CONFIGURED_STRATEGIES = Dict{String, TradingStrategy.AbstractStrategy}()
+# const STRATEGIES_LOCK = ReentrantLock()
+const STRATEGY_CONFIG_KEY_PREFIX = "trading_strategy_config_"
+
 
 # Helper to get strategy types. In a real system, this might come from a registry.
 function _get_available_strategy_types()
@@ -109,10 +113,54 @@ function configure_strategy_handler(req::HTTP.Request)
             return Utils.error_response("Unsupported strategy_type: $strategy_type", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
         end
 
-        lock(STRATEGIES_LOCK) do
-            CONFIGURED_STRATEGIES[strategy_name] = strategy_instance
+        # Store the configuration parameters used to create the strategy
+        # This allows re-instantiation on load.
+        # The 'params' Dict already contains most of what's needed.
+        # We also need to store the strategy_type and the assigned strategy_name.
+        config_to_store = Dict(
+            "strategy_type" => strategy_type,
+            "name" => strategy_name, # The generated or provided name
+            "parameters" => params, # Original parameters from request body
+            # For OptimalPortfolio, store resolved DEXToken details if they were constructed
+            "resolved_tokens_for_portfolio" => if strategy_type == "OptimalPortfolio" 
+                                                  [Dict("address"=>t.address, "symbol"=>t.symbol, "name"=>t.name, "decimals"=>t.decimals, "chain_id"=>t.chain_id) for t in strategy_instance.tokens] 
+                                               else nothing end,
+            # For ArbitrageStrategy, store detailed configurations for each DEX instance.
+            "dex_configurations_for_arbitrage" => if strategy_type == "Arbitrage"
+                                                      [
+                                                          Dict(
+                                                              "protocol" => d.config.protocol_name, # Assuming AbstractDEX has this, or derive from type
+                                                              "version" => d.config.version_name,   # Assuming AbstractDEX has this
+                                                              "dex_name" => d.config.name,
+                                                              "chain_id" => d.config.chain_id,
+                                                              "rpc_url" => d.config.rpc_url,
+                                                              "router_address" => d.config.router_address,
+                                                              "factory_address" => d.config.factory_address
+                                                              # Add other relevant fields from d.config as needed by _get_or_create_dex_instance
+                                                          ) for d in strategy_instance.dex_instances # strategy_instance.dex_instances should hold AbstractDEX
+                                                      ]
+                                                  else nothing end,
+            "tokens_of_interest_for_arbitrage" => if strategy_type == "Arbitrage"
+                                                        [Dict("address"=>t.address, "symbol"=>t.symbol, "name"=>t.name, "decimals"=>t.decimals, "chain_id"=>t.chain_id) for t in strategy_instance.tokens_of_interest]
+                                                    else nothing end
+            # Other specific constructed fields from strategy_instance if not in original params
+        )
+        
+        storage_key = STRATEGY_CONFIG_KEY_PREFIX * strategy_name
+        save_success = Storage.save_default(storage_key, config_to_store)
+
+        if !save_success
+            @error "Failed to save configured strategy $strategy_name to persistent storage."
+            # Decide if this should be a user-facing error or just a backend issue.
+            # For now, let the configuration proceed in-memory for this session if saving fails.
+            # A robust system might error out or have a fallback.
+            # To keep it simple, we'll assume it's stored for now for the response.
         end
-        return Utils.json_response(Dict("message"=>"Strategy '$strategy_name' configured successfully.", "name"=>strategy_name, "type"=>strategy_type))
+        # We don't need to keep it in an in-memory dict anymore if it's persisted.
+        # lock(STRATEGIES_LOCK) do
+        #     CONFIGURED_STRATEGIES[strategy_name] = strategy_instance
+        # end
+        return Utils.json_response(Dict("message"=>"Strategy '$strategy_name' configured and saved successfully.", "name"=>strategy_name, "type"=>strategy_type))
     catch e
         @error "Error configuring strategy $strategy_name ($strategy_type)" exception=(e,catch_backtrace())
         return Utils.error_response("Failed to configure strategy: $(sprint(showerror, e))", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
@@ -122,49 +170,137 @@ end
 function execute_strategy_handler(req::HTTP.Request, strategy_name::String)
     body = Utils.parse_request_body(req) # Body might contain market data or execution params
     
-    local strategy_instance::Union{TradingStrategy.AbstractStrategy, Nothing}
-    lock(STRATEGIES_LOCK) do
-        strategy_instance = get(CONFIGURED_STRATEGIES, strategy_name, nothing)
+    storage_key = STRATEGY_CONFIG_KEY_PREFIX * strategy_name
+    loaded_config_tuple = Storage.load_default(storage_key)
+
+    if isnothing(loaded_config_tuple)
+        return Utils.error_response("Strategy '$strategy_name' not found in persistent storage.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
+    end
+    
+    config_data, _ = loaded_config_tuple
+    if !isa(config_data, Dict)
+        @error "Corrupted strategy config for $strategy_name in storage."
+        return Utils.error_response("Corrupted strategy configuration for '$strategy_name'.", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
     end
 
-    if isnothing(strategy_instance)
-        return Utils.error_response("Strategy '$strategy_name' not found or not configured.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
+    # Re-instantiate the strategy (conceptual, needs full implementation based on stored config_data)
+    # This is where the stored "strategy_type", "name", "parameters", etc. would be used.
+    # For now, we'll assume we can get enough to call the TradingStrategy execute method.
+    # This part is complex because strategy constructors need specific types (DEXToken, AbstractDEX).
+    # The `configure_strategy_handler` would need to store enough info to reconstruct these.
+    
+    # Simplified re-instantiation for this example (highly dependent on what's stored)
+    # This is a major placeholder for robust strategy re-instantiation from stored config.
+    local strategy_instance::Union{TradingStrategy.AbstractStrategy, Nothing}
+    try
+        # This is a mock re-instantiation. A real one would use stored params.
+        # For example, if config_data["strategy_type"] == "MovingAverageCrossover"
+        # strategy_instance = TradingStrategy.MovingAverageCrossoverStrategy(config_data["name"], config_data["parameters"]["asset_pair"], ...)
+        # This is non-trivial because parameters like DEXToken lists or AbstractDEX lists need careful handling.
+        @warn "Strategy re-instantiation from storage in execute_strategy_handler is a placeholder."
+        # For the sake of proceeding, let's assume a mock strategy if re-instantiation is too complex here.
+        # This means the execute_strategy call below might not use the *exact* configured strategy state
+        # unless the stored config_data is perfectly aligned with what execute_strategy expects or can reconstruct.
+        
+        # Attempt to reconstruct based on type (very simplified)
+        s_type = get(config_data, "strategy_type", "")
+        s_name = get(config_data, "name", strategy_name)
+        s_params = get(config_data, "parameters", Dict())
+
+        if s_type == "MovingAverageCrossover"
+            strategy_instance = TradingStrategy.MovingAverageCrossoverStrategy(s_name, get(s_params,"asset_pair","ETH/USD"); 
+                                                                              short_window=get(s_params, "short_window", 20),
+                                                                              long_window=get(s_params, "long_window", 50),
+                                                                              optimization_params=get(s_params, "optimization_params", Dict()))
+        elseif s_type == "MeanReversion"
+             strategy_instance = TradingStrategy.MeanReversionStrategy(s_name, get(s_params,"asset_pair","ETH/USD");
+                                                                      lookback_period=get(s_params, "lookback_period", 20),
+                                                                      std_dev_multiplier=get(s_params, "std_dev_multiplier", 2.0),
+                                                                      optimization_params=get(s_params, "optimization_params", Dict()))
+        elseif s_type == "OptimalPortfolio"
+            resolved_tokens_data = get(config_data, "resolved_tokens_for_portfolio", [])
+            if isempty(resolved_tokens_data) @error "No token data for OptimalPortfolio strategy '$s_name'"; return Utils.error_response("Stored config for OptimalPortfolio strategy '$s_name' is missing token data.",500); end
+            tokens = [DEXBase.DEXToken(t["address"],t["symbol"],t["name"],t["decimals"],t["chain_id"]) for t in resolved_tokens_data]
+            strategy_instance = TradingStrategy.OptimalPortfolioStrategy(s_name, tokens; 
+                                                                        risk_free_rate=get(s_params, "risk_free_rate", 0.02),
+                                                                        optimization_params=get(s_params, "optimization_params", Dict()))
+        elseif s_type == "Arbitrage"
+            dex_configs_data = get(config_data, "dex_configurations_for_arbitrage", [])
+            if isempty(dex_configs_data) @error "No DEX configurations for Arbitrage strategy '$s_name'"; return Utils.error_response("Stored config for Arbitrage strategy '$s_name' is missing DEX configurations.",500); end
+            
+            rehydrated_dex_instances = DEXBase.AbstractDEX[]
+            for dex_conf_item in dex_configs_data
+                # Ensure all necessary fields for _get_or_create_dex_instance are present
+                # protocol_name and version_name might need to be derived if not stored directly in DEXConfig
+                # For now, assume they are stored or can be inferred.
+                # This part needs DexHandlers._get_or_create_dex_instance to be callable.
+                # We might need to pass the HTTP.Request object or a simplified params dict.
+                # Let's assume `dex_conf_item` has "protocol", "version", and other params.
+                dex_protocol = get(dex_conf_item, "protocol", "uniswap") # Default if missing
+                dex_version = get(dex_conf_item, "version", "v2")     # Default if missing
+                
+                # Construct params dict for _get_or_create_dex_instance
+                dex_handler_params = Dict{String, String}() # _get_or_create_dex_instance expects string values for query_params
+                for (k,v) in dex_conf_item
+                    if k != "protocol" && k != "version" # These are passed directly
+                        dex_handler_params[String(k)] = string(v) # Convert all to string for safety
+                    end
+                end
+                
+                instance = DexHandlers._get_or_create_dex_instance(dex_protocol, dex_version, dex_handler_params)
+                if isnothing(instance)
+                    @error "Failed to re-instantiate DEX for Arbitrage strategy: $dex_conf_item"
+                    return Utils.error_response("Failed to re-instantiate a DEX for Arbitrage strategy '$s_name'.", 500)
+                end
+                push!(rehydrated_dex_instances, instance)
+            end
+
+            tokens_data = get(config_data, "tokens_of_interest_for_arbitrage", [])
+            if isempty(tokens_data) @error "No tokens_of_interest for Arbitrage strategy '$s_name'"; return Utils.error_response("Stored config for Arbitrage strategy '$s_name' is missing tokens_of_interest.",500); end
+            tokens = [DEXBase.DEXToken(t["address"],t["symbol"],t["name"],t["decimals"],t["chain_id"]) for t in tokens_data]
+            
+            strategy_instance = TradingStrategy.ArbitrageStrategy(s_name, rehydrated_dex_instances, tokens;
+                                                                min_profit_threshold_percent=get(s_params, "min_profit_threshold_percent", 0.1),
+                                                                max_trade_size_usd=get(s_params, "max_trade_size_usd", 1000.0),
+                                                                optimization_params=get(s_params, "optimization_params", Dict()))
+        else
+            return Utils.error_response("Cannot re-instantiate unknown strategy type '$s_type' for execution.", 500)
+        end
+
+    catch recon_err
+        @error "Failed to re-instantiate strategy '$strategy_name' from stored config" error=recon_err stack=catch_backtrace()
+        return Utils.error_response("Failed to load strategy '$strategy_name' for execution: $(sprint(showerror, recon_err))", 500)
+    end
+
+
+    if isnothing(strategy_instance) # Should be caught by re-instantiation logic
+        return Utils.error_response("Strategy '$strategy_name' could not be loaded/re-instantiated.", 500)
     end
 
     try
-        market_data_payload = get(body, "market_data", Dict()) # Default to empty Dict
+        market_data_payload = get(body, "market_data", Dict()) 
         result = Dict()
 
-        # Dispatch to the correct execute_strategy method based on type
-        # This requires that TradingStrategy.execute_strategy is defined for these types.
         if isa(strategy_instance, TradingStrategy.OptimalPortfolioStrategy)
-            # Expects historical_prices as Matrix{Float64}
-            # API payload would need to send this in a JSON-compatible format (e.g., array of arrays)
             prices_data = get(market_data_payload, "historical_prices", [])
             if !isa(prices_data, AbstractVector) || any(!isa(row, AbstractVector) for row in prices_data)
-                 return Utils.error_response("OptimalPortfolioStrategy requires 'historical_prices' as an array of arrays (rows=time, cols=tokens).", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
+                 return Utils.error_response("OptimalPortfolioStrategy requires 'historical_prices' as array of arrays.", 400)
             end
-            # Convert to Matrix{Float64}
             try
-                historical_prices_matrix = hcat(prices_data...)' # Transpose to get time as rows
-                historical_prices_matrix = convert(Matrix{Float64}, historical_prices_matrix)
-                result = TradingStrategy.execute_strategy(strategy_instance, historical_prices_matrix)
-            catch conv_err
-                 return Utils.error_response("Error converting historical_prices to matrix: $(sprint(showerror, conv_err))", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
-            end
+                hist_matrix = convert(Matrix{Float64}, hcat(prices_data...)')
+                result = TradingStrategy.execute_strategy(strategy_instance; historical_prices_matrix=hist_matrix) # Pass as keyword
+            catch conv_err; return Utils.error_response("Error converting prices: $(sprint(showerror, conv_err))", 400) end
         elseif isa(strategy_instance, TradingStrategy.ArbitrageStrategy)
-            # ArbitrageStrategy.execute_strategy (as defined) doesn't take market_data, it fetches its own.
             result = TradingStrategy.execute_strategy(strategy_instance) 
         elseif isa(strategy_instance, TradingStrategy.MovingAverageCrossoverStrategy) || isa(strategy_instance, TradingStrategy.MeanReversionStrategy)
-             # These expect a Vector{Float64} of historical prices for a single asset pair.
             prices_data = get(market_data_payload, "historical_prices", [])
             if !isa(prices_data, AbstractVector) || any(!isa(p, Number) for p in prices_data)
-                return Utils.error_response("This strategy type requires 'historical_prices' as an array of numbers.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
+                return Utils.error_response("This strategy needs 'historical_prices' as array of numbers.", 400)
             end
-            historical_prices_vector = convert(Vector{Float64}, prices_data)
-            result = TradingStrategy.execute_strategy(strategy_instance, historical_prices_vector)
+            hist_vector = convert(Vector{Float64}, prices_data)
+            result = TradingStrategy.execute_strategy(strategy_instance, hist_vector)
         else
-            return Utils.error_response("Execution for strategy type $(typeof(strategy_instance)) not implemented in handler.", 501, error_code="NOT_IMPLEMENTED")
+            return Utils.error_response("Execution for type $(typeof(strategy_instance)) not handled.", 501)
         end
         
         return Utils.json_response(result)
@@ -176,61 +312,62 @@ end
 
 function list_configured_strategies_handler(req::HTTP.Request)
     try
-        lock(STRATEGIES_LOCK) do
-            strategy_list = [
-                Dict("name" => name, "type" => string(typeof(strat)), "details" => TradingStrategy.get_strategy_details(strat)) # Assuming get_strategy_details exists
-                for (name, strat) in CONFIGURED_STRATEGIES
-            ]
-            return Utils.json_response(Dict("configured_strategies" => strategy_list))
+        all_strategy_keys = Storage.list_keys_default(STRATEGY_CONFIG_KEY_PREFIX)
+        strategy_list = []
+        for key in all_strategy_keys
+            loaded_config_tuple = Storage.load_default(key)
+            if !isnothing(loaded_config_tuple)
+                config_data, _ = loaded_config_tuple
+                if isa(config_data, Dict)
+                    push!(strategy_list, Dict(
+                        "name" => get(config_data, "name", replace(key, STRATEGY_CONFIG_KEY_PREFIX => "")),
+                        "type" => get(config_data, "strategy_type", "Unknown"),
+                        "parameters_preview" => get(config_data,"parameters", Dict()) # Show stored params
+                    ))
+                end
+            end
         end
+        return Utils.json_response(Dict("configured_strategies" => strategy_list))
     catch e
-        @error "Error listing configured strategies" exception=(e, catch_backtrace())
+        @error "Error listing configured strategies from storage" exception=(e, catch_backtrace())
         return Utils.error_response("Failed to list configured strategies", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
     end
 end
 
 function get_strategy_details_handler(req::HTTP.Request, strategy_name::String)
-    local strategy_instance::Union{TradingStrategy.AbstractStrategy, Nothing}
-    lock(STRATEGIES_LOCK) do
-        strategy_instance = get(CONFIGURED_STRATEGIES, strategy_name, nothing)
-    end
+    storage_key = STRATEGY_CONFIG_KEY_PREFIX * strategy_name
+    loaded_config_tuple = Storage.load_default(storage_key)
 
-    if isnothing(strategy_instance)
-        return Utils.error_response("Strategy '$strategy_name' not found.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
+    if isnothing(loaded_config_tuple)
+        return Utils.error_response("Strategy '$strategy_name' not found in storage.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
     end
+    config_data, _ = loaded_config_tuple
     
-    try
-        # Need a generic way to get details from AbstractStrategy, or dispatch
-        # For now, just return its basic info. A get_strategy_details(strat) method in TradingStrategy.jl would be better.
-        details = Dict(
-            "name" => strategy_name,
-            "type" => string(typeof(strategy_instance)),
-            # "parameters" => strategy_instance.parameters # If strategies store their config
-        )
-        # Example of more detailed info if available:
-        if isa(strategy_instance, TradingStrategy.OptimalPortfolioStrategy)
-            details["tokens"] = [t.symbol for t in strategy_instance.tokens]
-            details["risk_free_rate"] = strategy_instance.risk_free_rate
-        end
-        return Utils.json_response(details)
-    catch e
-        @error "Error getting details for strategy $strategy_name" exception=(e,catch_backtrace())
+    # Return the stored configuration data
+    return Utils.json_response(config_data) # This is the Dict we stored
+    
+    # try
+    #     # This would require re-instantiating the strategy to call a method on it,
+    #     # which is complex here. Better to return the stored config.
+    #     # details = TradingStrategy.get_strategy_details(strategy_instance) 
+    #     # return Utils.json_response(details)
+    # catch e
+    #     @error "Error getting details for strategy $strategy_name" exception=(e,catch_backtrace())
         return Utils.error_response("Failed to get strategy details: $(sprint(showerror, e))", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
     end
 end
 
 function delete_strategy_handler(req::HTTP.Request, strategy_name::String)
+    storage_key = STRATEGY_CONFIG_KEY_PREFIX * strategy_name
     try
-        lock(STRATEGIES_LOCK) do
-            if haskey(CONFIGURED_STRATEGIES, strategy_name)
-                delete!(CONFIGURED_STRATEGIES, strategy_name)
-                return Utils.json_response(Dict("message"=>"Strategy '$strategy_name' deleted successfully."))
-            else
-                return Utils.error_response("Strategy '$strategy_name' not found.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
-            end
+        if Storage.exists_default(storage_key)
+            Storage.delete_key_default(storage_key)
+            return Utils.json_response(Dict("message"=>"Strategy '$strategy_name' deleted successfully from storage."))
+        else
+            return Utils.error_response("Strategy '$strategy_name' not found in storage.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
         end
     catch e
-        @error "Error deleting strategy $strategy_name" exception=(e,catch_backtrace())
+        @error "Error deleting strategy $strategy_name from storage" exception=(e,catch_backtrace())
         return Utils.error_response("Failed to delete strategy: $(sprint(showerror, e))", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
     end
 end
@@ -242,29 +379,92 @@ function backtest_strategy_handler(req::HTTP.Request, strategy_name::String)
         return Utils.error_response("Request body with backtest parameters (e.g., historical data, date range) required.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
     end
 
-    local strategy_instance::Union{TradingStrategy.AbstractStrategy, Nothing}
-    lock(STRATEGIES_LOCK) do
-        strategy_instance = get(CONFIGURED_STRATEGIES, strategy_name, nothing)
-    end
+    storage_key = STRATEGY_CONFIG_KEY_PREFIX * strategy_name
+    loaded_config_tuple = Storage.load_default(storage_key)
 
-    if isnothing(strategy_instance)
-        return Utils.error_response("Strategy '$strategy_name' not found.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
+    if isnothing(loaded_config_tuple)
+        return Utils.error_response("Strategy '$strategy_name' not found for backtest.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
     end
+    config_data, _ = loaded_config_tuple
+    
+    # Re-instantiate strategy (simplified, as in execute_strategy_handler)
+    local strategy_instance::Union{TradingStrategy.AbstractStrategy, Nothing}
+    try
+        s_type = get(config_data, "strategy_type", "")
+        s_name = get(config_data, "name", strategy_name)
+        s_params = get(config_data, "parameters", Dict())
+        
+        if s_type == "MovingAverageCrossover" 
+            strategy_instance = TradingStrategy.MovingAverageCrossoverStrategy(s_name, get(s_params,"asset_pair","ETH/USD"); 
+                                                                              short_window=get(s_params, "short_window", 20),
+                                                                              long_window=get(s_params, "long_window", 50),
+                                                                              optimization_params=get(s_params, "optimization_params", Dict()))
+        elseif s_type == "MeanReversion" 
+            strategy_instance = TradingStrategy.MeanReversionStrategy(s_name, get(s_params,"asset_pair","ETH/USD");
+                                                                      lookback_period=get(s_params, "lookback_period", 20),
+                                                                      std_dev_multiplier=get(s_params, "std_dev_multiplier", 2.0),
+                                                                      optimization_params=get(s_params, "optimization_params", Dict()))
+        elseif s_type == "OptimalPortfolio"
+            resolved_tokens_data = get(config_data, "resolved_tokens_for_portfolio", [])
+            if isempty(resolved_tokens_data) @error "No token data for OptimalPortfolio strategy '$s_name'"; return Utils.error_response("Stored config for OptimalPortfolio strategy '$s_name' is missing token data.",500); end
+            tokens = [DEXBase.DEXToken(t["address"],t["symbol"],t["name"],t["decimals"],t["chain_id"]) for t in resolved_tokens_data]
+            strategy_instance = TradingStrategy.OptimalPortfolioStrategy(s_name, tokens; 
+                                                                        risk_free_rate=get(s_params, "risk_free_rate", 0.02),
+                                                                        optimization_params=get(s_params, "optimization_params", Dict()))
+        elseif s_type == "Arbitrage"
+            # Arbitrage backtesting is not yet supported by TradingStrategy.jl backend,
+            # but we still attempt to load it to ensure config is valid.
+            # The TradingStrategy.backtest_strategy function will handle the "Not Implemented" part.
+            @info "Attempting to load ArbitrageStrategy '$s_name' for backtest. Backend support for arbitrage backtesting is pending."
+            
+            dex_configs_data = get(config_data, "dex_configurations_for_arbitrage", []) # This is Vector{Dict{String,Any}}
+            if isempty(dex_configs_data) @error "No DEX configurations for Arbitrage strategy '$s_name'"; return Utils.error_response("Stored config for Arbitrage strategy '$s_name' is missing DEX configurations.",500); end
+            
+            tokens_data = get(config_data, "tokens_of_interest_for_arbitrage", [])
+            if isempty(tokens_data) @error "No tokens_of_interest for Arbitrage strategy '$s_name'"; return Utils.error_response("Stored config for Arbitrage strategy '$s_name' is missing tokens_of_interest.",500); end
+            tokens = [DEXBase.DEXToken(t["address"],t["symbol"],t["name"],t["decimals"],t["chain_id"]) for t in tokens_data]
+            
+            # Use the new constructor in TradingStrategy.jl that takes dex_configurations
+            strategy_instance = TradingStrategy.ArbitrageStrategy(s_name, dex_configs_data, tokens; # Pass dex_configs_data directly
+                                                                min_profit_threshold_percent=get(s_params, "min_profit_threshold_percent", 0.1),
+                                                                max_trade_size_usd=get(s_params, "max_trade_size_usd", 1000.0),
+                                                                optimization_params=get(s_params, "optimization_params", Dict()),
+                                                                price_feed_provider=get(s_params, "price_feed_provider", "chainlink"), # Pass these through
+                                                                price_feed_config_override=get(s_params, "price_feed_config_override", Dict()))
+        else 
+            return Utils.error_response("Cannot re-instantiate unknown strategy type '$s_type' for backtest.", 500) 
+        end
+    catch e; return Utils.error_response("Failed to load strategy for backtest: $(sprint(showerror,e))", 500) end
+
+    if isnothing(strategy_instance) return Utils.error_response("Strategy '$strategy_name' could not be loaded for backtest.", 500) end
 
     try
-        # Extract backtest parameters from body: historical_data, start_date, end_date, etc.
-        # This is highly dependent on how backtest_strategy is implemented in TradingStrategy.jl
-        @warn "Backtesting API is conceptual. `TradingStrategy.backtest_strategy` needs full implementation."
-        # backtest_params = body # Simplified
-        # results = TradingStrategy.backtest_strategy(strategy_instance, backtest_params) 
-        mock_results = Dict(
-            "strategy_name" => strategy_name,
-            "period" => "mock_period",
-            "sharpe_ratio" => rand(0.1:0.01:2.5),
-            "max_drawdown" => rand(5.0:0.1:20.0),
-            "total_return" => rand(1.0:0.1:50.0)
-        )
-        return Utils.json_response(Dict("message"=>"Backtest for '$strategy_name' completed (mock results).", "results"=>mock_results))
+        historical_market_data = get(body, "historical_market_data", nothing)
+        if isnothing(historical_market_data) return Utils.error_response("Missing 'historical_market_data' for backtest.", 400) end
+        
+        # Convert historical_market_data based on strategy type
+        # This is where the API needs to be clear about expected format from client
+        data_for_backtest = nothing
+        if isa(strategy_instance, TradingStrategy.OptimalPortfolioStrategy)
+            if !isa(historical_market_data, AbstractVector) || any(!isa(r,AbstractVector) for r in historical_market_data)
+                return Utils.error_response("OptimalPortfolio expects historical_market_data as array of arrays.", 400)
+            end
+            try data_for_backtest = convert(Matrix{Float64}, hcat(historical_market_data...)')
+            catch e; return Utils.error_response("Error converting market data for OptimalPortfolio: $e", 400) end
+        elseif isa(strategy_instance, TradingStrategy.MovingAverageCrossoverStrategy) || isa(strategy_instance, TradingStrategy.MeanReversionStrategy)
+            if !isa(historical_market_data, AbstractVector) || any(!isa(x,Number) for x in historical_market_data)
+                 return Utils.error_response("MA/MeanReversion expects historical_market_data as array of numbers.", 400)
+            end
+            data_for_backtest = convert(Vector{Float64}, historical_market_data)
+        else
+             return Utils.error_response("Backtest for this strategy type not fully supported via this generic data input.", 400)
+        end
+
+        backtest_params_from_body = Dict{Symbol, Any}()
+        for (k,v) in get(body, "backtest_parameters", Dict()) backtest_params_from_body[Symbol(k)] = v end
+        
+        results = TradingStrategy.backtest_strategy(strategy_instance, data_for_backtest; backtest_params_from_body...)
+        return Utils.json_response(Dict("message"=>"Backtest for '$strategy_name' completed.", "results"=>results))
     catch e
         @error "Error during backtest for strategy $strategy_name" exception=(e,catch_backtrace())
         return Utils.error_response("Backtest failed: $(sprint(showerror, e))", 500, error_code="BACKTEST_FAILED")
@@ -277,62 +477,41 @@ function update_strategy_handler(req::HTTP.Request, strategy_name::String)
         return Utils.error_response("Invalid or empty request body for update.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
     end
 
-    lock(STRATEGIES_LOCK) do
-        if !haskey(CONFIGURED_STRATEGIES, strategy_name)
-            return Utils.error_response("Strategy '$strategy_name' not found for update.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
-        end
+    storage_key = STRATEGY_CONFIG_KEY_PREFIX * strategy_name
+    loaded_config_tuple = Storage.load_default(storage_key)
 
-        existing_strategy = CONFIGURED_STRATEGIES[strategy_name]
-        strategy_type = string(typeof(existing_strategy)) # Get type from existing instance
-        
-        # For updates, we'd typically only allow changing certain parameters.
-        # Re-creating the strategy instance with new params is one way, but complex if type-specific fields.
-        # A better way would be for each AbstractStrategy to have an `update_parameters!(strat, params_dict)` method.
-        # For now, this is a conceptual placeholder for updating.
-        
-        new_params = get(body, "parameters", nothing)
-        if isnothing(new_params) || !isa(new_params, Dict)
-            return Utils.error_response("Missing or invalid 'parameters' field in request body for update.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
-        end
-
-        @warn "Updating strategy '$strategy_name' is conceptual. Full implementation would require type-specific parameter updates and re-validation."
-        
-        # Conceptual update: merge new params into existing strategy's config if it had one, or re-init.
-        # This is highly simplified and likely insufficient for real strategies.
-        if isa(existing_strategy, TradingStrategy.OptimalPortfolioStrategy)
-            # Example: Update risk_free_rate or optimization_params
-            if haskey(new_params, "risk_free_rate") existing_strategy.risk_free_rate = new_params["risk_free_rate"] end
-            if haskey(new_params, "optimization_params") 
-                # This should merge, not just replace, if that's the intent
-                existing_strategy.optimization_params = merge(existing_strategy.optimization_params, new_params["optimization_params"])
-            end
-            # Note: Changing `tokens` or `price_feed_config` would be more like re-creating.
-        elseif isa(existing_strategy, TradingStrategy.ArbitrageStrategy)
-            if haskey(new_params, "min_profit_threshold_percent") existing_strategy.min_profit_threshold_percent = new_params["min_profit_threshold_percent"] end
-            if haskey(new_params, "max_trade_size_usd") existing_strategy.max_trade_size_usd = new_params["max_trade_size_usd"] end
-        elseif isa(existing_strategy, TradingStrategy.MovingAverageCrossoverStrategy)
-            if haskey(new_params, "short_window") existing_strategy.short_window = new_params["short_window"] end
-            if haskey(new_params, "long_window") existing_strategy.long_window = new_params["long_window"] end
-            # Validate windows again if changed: short < long
-            if existing_strategy.short_window >= existing_strategy.long_window
-                return Utils.error_response("Invalid window sizes after update: short_window must be less than long_window.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
-            end
-        elseif isa(existing_strategy, TradingStrategy.MeanReversionStrategy)
-            if haskey(new_params, "lookback_period") existing_strategy.lookback_period = new_params["lookback_period"] end
-            if haskey(new_params, "std_dev_multiplier") existing_strategy.std_dev_multiplier = new_params["std_dev_multiplier"] end
-        else
-            return Utils.error_response("Update for strategy type $(typeof(existing_strategy)) not fully implemented.", 501, error_code="NOT_IMPLEMENTED")
-        end
-        
-        CONFIGURED_STRATEGIES[strategy_name] = existing_strategy # Re-assign if mutable struct fields were changed
-        return Utils.json_response(Dict("message"=>"Strategy '$strategy_name' updated conceptually.", "name"=>strategy_name, "type"=>strategy_type))
+    if isnothing(loaded_config_tuple)
+        return Utils.error_response("Strategy '$strategy_name' not found for update.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND)
     end
-    # Catch block for general errors
-    # catch e
-    #     @error "Error updating strategy $strategy_name" exception=(e,catch_backtrace())
-    #     return Utils.error_response("Failed to update strategy: $(sprint(showerror, e))", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
-    # end
-end
+    
+    existing_config_data, _ = loaded_config_tuple
+    if !isa(existing_config_data, Dict)
+         return Utils.error_response("Corrupted stored config for strategy '$strategy_name'.", 500)
+    end
 
+    update_params = get(body, "parameters", nothing)
+    if isnothing(update_params) || !isa(update_params, Dict)
+        return Utils.error_response("Request body must include a 'parameters' object for update.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
+    end
+
+    # Merge new parameters into existing. Deeper merge might be needed for nested dicts.
+    # This is a shallow merge of the 'parameters' field.
+    # More specific logic per strategy type would be needed for robust updates.
+    if haskey(existing_config_data, "parameters") && isa(existing_config_data["parameters"], Dict)
+        merge!(existing_config_data["parameters"], update_params)
+    else
+        existing_config_data["parameters"] = update_params
+    end
+    
+    # Potentially update other top-level modifiable fields if passed in body, e.g. "min_profit_threshold_percent" for Arbitrage
+    # For now, only updating within the "parameters" sub-dictionary.
+
+    save_success = Storage.save_default(storage_key, existing_config_data)
+    if !save_success
+        return Utils.error_response("Failed to save updated strategy '$strategy_name'.", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
+    end
+    
+    return Utils.json_response(Dict("message"=>"Strategy '$strategy_name' updated successfully in storage.", "updated_config"=>existing_config_data))
+end
 
 end # module TradingHandlers

@@ -1,211 +1,263 @@
 # julia/src/blockchain/Wallet.jl
 module Wallet
 
-using Logging, Base64, SHA # Added SHA
-# Potentially using MbedTLS or other crypto libraries for key generation/derivation if done locally.
-# For EVM signing, a library that can perform secp256k1 recovery is needed.
-# For Solana, ed25519 signing.
-# Example: using SHA for Keccak256 if deriving EVM address (though address derivation is complex)
+using Logging, Base64, SHA, JSON3 # JSON3 for serializing tx_params if needed for Rust
+using Printf # For hex string formatting
 
-export AbstractWallet, LocalDevWallet, initialize_wallet, get_address, sign_transaction_evm, sign_transaction_solana
+# Assuming Blockchain.jl provides utility for hex string conversion or it's done here
+# import ..Blockchain: to_hex_string # If such a utility exists
+
+export AbstractWallet, LocalDevWallet, AgentFFIWallet, initialize_wallet, get_address, 
+       sign_transaction_evm_ffi # New export
+
+# Define the path to the Rust shared library.
+# This path is relative to the location of Wallet.jl (julia/src/blockchain/)
+# Going up three levels to project root, then down to the target.
+const RUST_SIGNER_LIB_PATH = joinpath(@__DIR__, "..", "..", "..", "packages", "rust_signer", "target", "debug", "librust_juliaos_signer")
+# Julia's ccall will append the correct dlext (.dylib, .so, .dll) if not specified in the name.
+# Alternatively, Libdl.dlext can be used:
+# const RUST_SIGNER_LIB_PATH = joinpath(@__DIR__, "..", "..", "..", "packages", "rust_signer", "target", "debug", "librust_juliaos_signer" * "." * Libdl.dlext)
+# For ccall, often just the name part before the extension is sufficient if the path is correct.
+# Let's use the version without explicit dlext for ccall, as it's more portable for the ccall tuple.
 
 abstract type AbstractWallet end
 
 """
     LocalDevWallet <: AbstractWallet
 
-A simple wallet for local development that loads a private key from an environment variable.
-WARNING: Not for production use. Private keys should never be hardcoded or insecurely stored.
+A simple structure to hold a development wallet's public address, typically loaded from an environment variable.
+This wallet does NOT handle private keys or signing on the backend. Signing is expected to be client-side.
 """
 mutable struct LocalDevWallet <: AbstractWallet
-    private_key_hex::Union{String, Nothing}
-    address::Union{String, Nothing} # This should be the public address derived from the private key
+    address::Union{String, Nothing} # Public address
     chain_type::Symbol # :evm or :solana
 
-    function LocalDevWallet(env_var_name::String, chain_type::Symbol)
-        pk_hex = get(ENV, env_var_name, nothing)
-        derived_address = nothing
+    function LocalDevWallet(address_env_var::String, chain_type::Symbol)
+        public_address = get(ENV, address_env_var, nothing)
 
-        if isnothing(pk_hex)
-            error("Private key environment variable '$env_var_name' not set. LocalDevWallet cannot be created without a private key.")
+        if isnothing(public_address)
+            @warn "Public address environment variable '$address_env_var' not set. LocalDevWallet will have no address."
+            # It's not an error to not have it, as it's for dev/identification only.
+        elseif chain_type == :evm && !(startswith(public_address, "0x") && length(public_address) == 42)
+            @warn "Provided EVM address for '$address_env_var' is not in the expected format: $public_address. Storing as is."
+        elseif chain_type == :solana && (length(public_address) < 32 || length(public_address) > 44) # Solana addresses are typically 32-44 chars base58
+            @warn "Provided Solana address for '$address_env_var' has an unusual length: $public_address. Storing as is."
         end
-
-        # --- Placeholder for Address Derivation ---
-        # This section requires actual cryptographic operations.
-        @warn """LocalDevWallet: Address derivation is a placeholder. 
-                 The 'address' field will not be a valid public address derived from the private key.
-                 Real implementation needs secp256k1 (EVM) or ed25519 (Solana) public key derivation and formatting."""
-        if chain_type == :evm
-            # EVM Address Derivation Steps (Conceptual):
-            # 1. private_key_bytes = hex2bytes(pk_hex)
-            # 2. public_key_point = secp256k1_pubkey_create(private_key_bytes) # Using a crypto library
-            # 3. public_key_bytes_uncompressed = secp256k1_pubkey_serialize(public_key_point, uncompressed_flag)
-            # 4. eth_public_key_bytes = public_key_bytes_uncompressed[2:end] # Skip 0x04 prefix if present
-            # 5. address_bytes = SHA.keccak256(eth_public_key_bytes)[end-19:end] # Last 20 bytes of hash
-            # 6. derived_address = "0x" * bytes2hex(address_bytes)
-            # Highly simplified & INCORRECT placeholder for address derivation:
-            derived_address = "0x" * bytes2hex(SHA.keccak256(hex2bytes(pk_hex))[1:20]) 
-        elseif chain_type == :solana
-            # Solana Address Derivation Steps (Conceptual):
-            # 1. private_key_bytes = hex2bytes(pk_hex) (or from base58 if that's how ENV stores it for Solana)
-            #    Solana private keys are typically the first 32 bytes of a 64-byte keypair (secret + public).
-            # 2. public_key_bytes = ed25519_pubkey_from_secret(private_key_bytes[1:32]) # Using a crypto library
-            # 3. derived_address = base58encode(public_key_bytes) # Using a Base58 library
-            # Highly simplified & INCORRECT placeholder for address derivation:
-            derived_address = Base64.base64encode(SHA.sha256(hex2bytes(pk_hex))[1:32])[1:44] 
-        end
-        # --- End Placeholder for Address Derivation ---
         
-        new(pk_hex, derived_address, chain_type)
+        new(public_address, chain_type)
     end
 end
 
 # Global wallet instances (example, a real app might manage these differently or on demand)
-const EVM_DEV_WALLET = Ref{Union{LocalDevWallet, Nothing}}(nothing)
-const SOLANA_DEV_WALLET = Ref{Union{LocalDevWallet, Nothing}}(nothing)
+const EVM_DEV_WALLET_INFO = Ref{Union{LocalDevWallet, Nothing}}(nothing) # Renamed to reflect it's info
+const SOLANA_DEV_WALLET_INFO = Ref{Union{LocalDevWallet, Nothing}}(nothing)
 
 """
-    initialize_wallet(chain_type::Symbol; env_var_for_pk::String="JULIAOS_DEV_PRIVATE_KEY")
+    initialize_wallet(chain_type::Symbol; env_var_for_address::String="JULIAOS_DEV_ADDRESS")
 
-Initializes a development wallet for the specified chain type using an environment variable for the private key.
+Initializes a development wallet structure with a public address for the specified chain type,
+loaded from an environment variable. Does not handle private keys.
 """
-function initialize_wallet(chain_type::Symbol; env_var_for_pk::String="JULIAOS_DEV_PRIVATE_KEY")::Union{AbstractWallet, Nothing}
-    @info "Initializing $(chain_type) development wallet from ENV var: $env_var_for_pk..."
-    wallet_instance = nothing
-    if chain_type == :evm
-        actual_env_var = env_var_for_pk # Could append _EVM if needed
-        EVM_DEV_WALLET[] = LocalDevWallet(actual_env_var, :evm)
-        wallet_instance = EVM_DEV_WALLET[]
+function initialize_wallet(chain_type::Symbol; env_var_for_address::String="JULIAOS_DEV_ADDRESS")::Union{AbstractWallet, Nothing}
+    @info "Initializing $(chain_type) development wallet info from ENV var: $env_var_for_address..."
+    wallet_instance_info = nothing
+    
+    actual_env_var = if chain_type == :evm
+        env_var_for_address # Or append _EVM
     elseif chain_type == :solana
-        actual_env_var = env_var_for_pk * "_SOLANA" # Suggest different ENV var for Solana
-        SOLANA_DEV_WALLET[] = LocalDevWallet(actual_env_var, :solana)
-        wallet_instance = SOLANA_DEV_WALLET[]
+        env_var_for_address * "_SOLANA" # Suggest different ENV var for Solana address
     else
         @error "Unsupported chain type for wallet initialization: $chain_type"
         return nothing
     end
 
-    if !isnothing(wallet_instance) && !isnothing(wallet_instance.private_key_hex) # Check if pk_hex was successfully loaded
-        @info "$chain_type dev wallet initialized. Address (placeholder): $(wallet_instance.address)"
-    else
-        # Error would have been thrown by LocalDevWallet constructor if pk_hex was nothing,
-        # or if chain_type was unsupported by initialize_wallet itself.
-        # This path implies wallet_instance might be nothing or pk_hex is nothing post-construction (should not happen with error in constructor).
-        @error "Failed to initialize $chain_type dev wallet (unsupported type or PK ENV var '$actual_env_var' problem)."
-        # Ensure the global Ref is also nothing if initialization failed for it
+    try
+        wallet_instance_info = LocalDevWallet(actual_env_var, chain_type)
         if chain_type == :evm
-            EVM_DEV_WALLET[] = nothing
+            EVM_DEV_WALLET_INFO[] = wallet_instance_info
         elseif chain_type == :solana
-            SOLANA_DEV_WALLET[] = nothing
+            SOLANA_DEV_WALLET_INFO[] = wallet_instance_info
         end
+
+        if !isnothing(wallet_instance_info.address)
+            @info "$chain_type dev wallet info initialized. Address: $(wallet_instance_info.address)"
+        else
+            @info "$chain_type dev wallet info initialized, but no address was found in ENV var '$actual_env_var'."
+        end
+        return wallet_instance_info
+    catch e
+        @error "Error creating LocalDevWallet for $chain_type with ENV var '$actual_env_var'." exception=(e, catch_backtrace())
+        if chain_type == :evm; EVM_DEV_WALLET_INFO[] = nothing; end
+        if chain_type == :solana; SOLANA_DEV_WALLET_INFO[] = nothing; end
         return nothing
     end
-    return wallet_instance
 end
 
 function get_address(wallet::AbstractWallet)::Union{String, Nothing}
     if isa(wallet, LocalDevWallet)
-        if isnothing(wallet.private_key_hex)
-            @warn "Wallet not properly initialized (no private key loaded)."
-            return nothing
-        end
-        # This should return the derived public address.
-        # The current LocalDevWallet constructor has placeholder derivation.
         return wallet.address 
+    elseif isa(wallet, AgentFFIWallet)
+        # The address for an FFI wallet would typically be derived by the Rust lib
+        # or configured alongside the key_identifier. For now, it might not store it directly.
+        # Or, it could call an FFI function to get the address for the key_identifier.
+        @warn "get_address for AgentFFIWallet is conceptual and may require an FFI call to Rust to derive address from key_identifier."
+        return get(wallet.metadata, "cached_address", "FFI_WALLET_ADDRESS_UNKNOWN") # Example
     end
+    @warn "get_address called on an unsupported wallet type: $(typeof(wallet))"
     return nothing
 end
 
 """
-    sign_transaction_evm(wallet::LocalDevWallet, unsigned_tx_params::Dict)::String
+    AgentFFIWallet <: AbstractWallet
 
-Signs an EVM transaction.
-`unsigned_tx_params` should contain fields like nonce, gasPrice, gasLimit, to, value, data, chainId.
-Returns the RLP-encoded, signed transaction hex string (starting with 0x).
+Represents a wallet whose keys and signing operations are managed by an external
+Rust library via FFI.
 """
-function sign_transaction_evm(wallet::LocalDevWallet, unsigned_tx_params::Dict)::String
-    if isnothing(wallet.private_key_hex)
-        error("EVM Wallet not initialized with a private key. Cannot sign.")
+struct AgentFFIWallet <: AbstractWallet
+    key_identifier::String # An identifier for the key managed by the Rust library
+    chain_type::Symbol     # :evm, :solana, etc.
+    metadata::Dict{String, Any} # For storing associated info like derived address if fetched
+
+    function AgentFFIWallet(key_id::String, chain_type::Symbol; metadata::Dict{String,Any}=Dict())
+        new(key_id, chain_type, metadata)
     end
+end
+
+# --- FFI Signing Function ---
+
+"""
+    sign_transaction_evm_ffi(wallet::AgentFFIWallet, transaction_params::Dict)::Union{String, Nothing}
+
+Signs an EVM transaction using the configured Rust FFI signing library.
+
+# Arguments
+- `wallet::AgentFFIWallet`: The FFI wallet instance containing the `key_identifier`.
+- `transaction_params::Dict`: A dictionary containing EVM transaction parameters:
+    - `to::String`: Recipient address ("0x...").
+    - `value::Union{String, BigInt, Int}`: Amount in Wei (hex string "0x..." or numeric).
+    - `data::String`: Transaction data ("0x..." or empty for simple transfers).
+    - `nonce::UInt64`: Transaction nonce.
+    - `gas_price::Union{String, BigInt, Int}`: Gas price in Wei (hex string "0x..." or numeric).
+    - `gas_limit::UInt64`: Gas limit.
+    - `chain_id::UInt64`: Chain ID.
+
+# Returns
+- `String`: The signed raw transaction hex string (starting with "0x") on success.
+- `Nothing`: If signing fails or parameters are invalid.
+"""
+function sign_transaction_evm_ffi(wallet::AgentFFIWallet, transaction_params::Dict)::Union{String, Nothing}
     if wallet.chain_type != :evm
-        error("This wallet is not configured for EVM signing.")
+        @error "sign_transaction_evm_ffi called with non-EVM wallet type: $(wallet.chain_type)"
+        return nothing
     end
-    
-    @warn "sign_transaction_evm: Placeholder implementation. Real EVM transaction signing needed using a crypto library (e.g., MbedTLS with secp256k1 or a dedicated Ethereum library)."
-    # Detailed Steps for Real Implementation:
-    # 1. Private Key: Convert wallet.private_key_hex to raw private key bytes.
-    # 2. Transaction Parameters from `unsigned_tx_params`:
-    #    - nonce: Convert to BigInt.
-    #    - gasPrice: Convert to BigInt (Wei).
-    #    - gasLimit: Convert to BigInt.
-    #    - to: Address string (or empty for contract creation).
-    #    - value: Convert to BigInt (Wei).
-    #    - data: Hex string (payload).
-    #    - chainId: Integer (for EIP-155 replay protection).
-    # 3. RLP Encoding (Unsigned Transaction for EIP-155):
-    #    RLP_encode([nonce, gasPrice, gasLimit, to, value, data, chainId, [], []]) 
-    #    (Note: some libraries handle the chainId, r, s part differently in the structure for hashing)
-    # 4. Hashing: Keccak256 hash of the RLP encoded bytes from step 3 (using SHA.keccak256).
-    # 5. Signing (secp256k1): Sign the hash from step 4 with the private key. This yields (r, s, v_recovery_id).
-    #    - 'v' needs to be adjusted for EIP-155: `v = recovery_id + 2 * chainId + 35` (or `recovery_id + chainId * 2 + 8` for some libraries, plus 27).
-    # 6. RLP Encoding (Signed Transaction):
-    #    RLP_encode([nonce, gasPrice, gasLimit, to, value, data, v, r, s])
-    # 7. Hex Conversion: Convert the RLP encoded bytes from step 6 to a "0x"-prefixed hex string.
-    
-    # Placeholder:
-    @debug "Simulating EVM signing for tx with data: $(get(unsigned_tx_params, "data", "0x"))"
-    # This mock RLP structure is illustrative and not a valid transaction.
-    mock_rlp_signed_tx = "0xf86c" * # RLP prefix for a list
-                         lpad(string(get(unsigned_tx_params,"nonce",0), base=16), 2, "0") * # nonce (example)
-                         "09184e72a000" * # gasPrice (example: 20 Gwei)
-                         "2710" * # gasLimit (example: 10000)
-                         (isempty(get(unsigned_tx_params,"to","")) ? "" : "94" * replace(get(unsigned_tx_params,"to",""), "0x"=>"")) * # to address (hex, no 0x, 20 bytes)
-                         lpad(string(get(unsigned_tx_params,"value",0), base=16), 2, "0") * # value (example)
-                         (isempty(get(unsigned_tx_params,"data","0x")) || get(unsigned_tx_params,"data","0x") == "0x" ? "80" : bytes2hex(Vector{UInt8}(replace(get(unsigned_tx_params,"data","0x"), "0x"=>"")))) * # data
-                         "1ca0" * bytes2hex(rand(UInt8,32)) * # r (mock 32 bytes)
-                         "a0" * bytes2hex(rand(UInt8,32))    # s (mock 32 bytes)
-    return mock_rlp_signed_tx
+
+    # Validate and prepare parameters for FFI call
+    try
+        key_id = wallet.key_identifier
+        to_addr = get(transaction_params, "to", "")
+        
+        val_param = get(transaction_params, "value", "0")
+        value_wei_hex = isa(val_param, String) ? (startswith(val_param, "0x") ? val_param : "0x" * val_param) : "0x" * string(BigInt(val_param), base=16)
+        
+        data_param = get(transaction_params, "data", "0x")
+        data_hex = isa(data_param, String) ? (startswith(data_param, "0x") ? data_param : "0x" * data_param) : "0x" * data_param # Ensure "0x"
+        
+        nonce = UInt64(get(transaction_params, "nonce", 0)) # Ensure type
+        
+        gas_price_param = get(transaction_params, "gas_price", "0")
+        gas_price_wei_hex = isa(gas_price_param, String) ? (startswith(gas_price_param, "0x") ? gas_price_param : "0x" * gas_price_param) : "0x" * string(BigInt(gas_price_param), base=16)
+
+        gas_limit = UInt64(get(transaction_params, "gas_limit", 0)) # Ensure type
+        chain_id_val = UInt64(get(transaction_params, "chain_id", 0)) # Ensure type
+
+        if isempty(to_addr) || gas_limit == 0 || chain_id_val == 0
+            @error "Missing required transaction parameters for FFI signing: to, gas_limit, or chain_id."
+            return nothing
+        end
+
+        # Prepare output buffer for the signed transaction hex
+        # Max length of signed tx hex: ~ (2 * (32*7 + ~70 for RLP overhead)) + 2 for "0x" ~ 600 chars
+        # Let's use a buffer of 1024 chars for safety.
+        out_buffer_len = UInt32(1024)
+        signed_tx_hex_out = Vector{UInt8}(undef, out_buffer_len) # Buffer for C string
+
+        # Make the ccall
+        # Note: String parameters are passed as Ptr{UInt8} (Cstring)
+        #       Numeric types must match the C signature precisely.
+        #       The output buffer is passed as Ptr{UInt8}.
+        
+        # Placeholder for actual ccall. This will error if librust_juliaos_signer is not found.
+        # Ensure RUST_SIGNER_LIB_PATH points to the correct library name without extension.
+        # The actual function name in Rust must be `#[no_mangle] pub extern "C" fn sign_evm_transaction_ffi(...)`
+        
+        # For safety, wrap ccall in a try-catch or check if library exists first.
+        # For now, direct ccall:
+        result_code = ccall(
+            (:sign_evm_transaction_ffi, RUST_SIGNER_LIB_PATH), # (function_name, library_name)
+            Int32, # Return type (status code)
+            (Cstring, Cstring, Cstring, Cstring, UInt64, Cstring, UInt64, UInt64, Ptr{UInt8}, UInt32), # Argument types
+            key_id, to_addr, value_wei_hex, data_hex, nonce, gas_price_wei_hex, gas_limit, chain_id_val,
+            signed_tx_hex_out, out_buffer_len
+        )
+        
+        # --- SIMULATED CCALL FOR NOW ---
+        # @warn """
+        # Wallet.sign_transaction_evm_ffi is using a SIMULATED ccall to Rust.
+        # Actual FFI call is commented out. Replace with real ccall when Rust library is available.
+        # This simulation will return a placeholder signed transaction.
+        # """
+        # # Simulate a successful signing for testing purposes
+        # simulated_signed_tx = "0xf86c" * string(nonce, base=16, pad=2) * 
+        #                       replace(gas_price_wei_hex, "0x"=>"") * 
+        #                       string(gas_limit, base=16, pad=6) * 
+        #                       replace(to_addr, "0x"=>"") * 
+        #                       replace(value_wei_hex, "0x"=>"") * 
+        #                       replace(data_hex, "0x"=>"") * 
+        #                       "01c0" * randstring("0123456789abcdef", 64) * # r
+        #                       "c0" * randstring("0123456789abcdef", 64)   # s
+        
+        # # Ensure it fits buffer and copy
+        # if length(simulated_signed_tx) < out_buffer_len
+        #     unsafe_copyto!(pointer(signed_tx_hex_out), pointer(simulated_signed_tx), length(simulated_signed_tx))
+        #     signed_tx_hex_out[length(simulated_signed_tx)+1] = 0 # Null terminate
+        #     result_code = Int32(length(simulated_signed_tx)) # Simulate success, return length
+        # else
+        #     result_code = Int32(-3) # Simulate buffer too small
+        # end
+        # --- END SIMULATED CCALL ---
+
+        if result_code < 0 # Error from Rust FFI
+            error_map = Dict(
+                -1 => "Key identifier not found or invalid",
+                -2 => "Cryptographic signing error in Rust library",
+                -3 => "Output buffer for signed transaction was too small",
+                -4 => "Invalid transaction parameter passed to Rust library"
+            )
+            err_msg = get(error_map, result_code, "Unknown error from Rust signing library (code: $result_code)")
+            @error "Rust FFI signing failed: $err_msg" key=key_id params=transaction_params
+            return nothing
+        elseif result_code == 0 # Should not happen if length is returned on success
+             @error "Rust FFI signing returned 0 (unexpected). Assuming failure." key=key_id
+             return nothing
+        else
+            # Success, result_code is the length of the string written to buffer
+            actual_length = Int(result_code)
+            signed_hex = unsafe_string(pointer(signed_tx_hex_out), actual_length)
+            @info "Transaction successfully signed via Rust FFI for key '$key_id'." tx_hash_preview=first(signed_hex,10)
+            return signed_hex
+        end
+
+    catch e
+        @error "Error during FFI parameter preparation or ccall for EVM signing" exception=(e, catch_backtrace())
+        return nothing
+    end
 end
 
-"""
-    sign_transaction_solana(wallet::LocalDevWallet, transaction_message_bytes::Vector{UInt8})::String
-
-Signs a Solana transaction message.
-`transaction_message_bytes` should be the serialized transaction message.
-Returns the signature as a base64 encoded string.
-"""
-function sign_transaction_solana(wallet::LocalDevWallet, transaction_message_bytes::Vector{UInt8})::String
-    if isnothing(wallet.private_key_hex)
-        error("Solana Wallet not initialized with a private key. Cannot sign.")
-    end
-    if wallet.chain_type != :solana
-        error("This wallet is not configured for Solana signing.")
-    end
-    @warn """sign_transaction_solana: Placeholder implementation. 
-             Real Solana (ed25519) transaction signing requires an Ed25519 crypto library."""
-    # Detailed Steps for Real Implementation:
-    # 1. Private Key Bytes: Convert `wallet.private_key_hex` (assuming it's hex of the 32-byte secret or 64-byte keypair)
-    #    to raw bytes. If it's a Base58 encoded secret key (common for Solana user wallets), decode that.
-    #    Solana's Ed25519 typically uses a 32-byte secret key, or the first 32 bytes of a 64-byte seed/keypair.
-    #    `private_key_for_signing = hex2bytes(wallet.private_key_hex)[1:32]` (Example if hex of 64-byte keypair)
-    # 2. Message: `transaction_message_bytes` is the byte array of the serialized transaction message to be signed.
-    # 3. Signing (Ed25519): Use an Ed25519 signing function from a suitable crypto library.
-    #    `signature_bytes = HypotheticalCryptoLib.ed25519_sign(transaction_message_bytes, private_key_for_signing)`
-    #    This will produce a 64-byte signature.
-    # 4. Encoding: Solana RPCs typically expect the signature to be Base64 encoded.
-    #    `return Base64.base64encode(signature_bytes)`
-    
-    # Placeholder:
-    @debug "Simulating Solana signing..."
-    mock_signature_bytes = rand(UInt8, 64) # ed25519 signatures are 64 bytes
-    return Base64.base64encode(mock_signature_bytes)
-end
 
 function __init__()
-    # Example: Auto-initialize if specific ENV vars are present, or leave to explicit calls.
-    # initialize_wallet(:evm, env_var_for_pk="JULIAOS_EVM_PK")
-    # initialize_wallet(:solana, env_var_for_pk="JULIAOS_SOL_PK")
-    @info "Wallet.jl module loaded. Use initialize_wallet(:chain_type) to set up development wallets from ENV."
+    @info "Wallet.jl module loaded. Current version supports LocalDevWallet (public address only) and conceptual AgentFFIWallet for Rust-based signing."
+    # Optionally, try to initialize dev wallet address info if ENV vars are set.
+    # initialize_wallet(:evm, env_var_for_address="JULIAOS_DEV_EVM_ADDRESS")
 end
 
 end # module Wallet

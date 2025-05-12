@@ -1,55 +1,44 @@
 module JuliaOS
 
 # Export public modules and functions
-export initialize, initialize_framework, initialize_cli
-export API, Storage, Swarms, SwarmBase, Types, CommandHandler, Agents
+export initialize, initialize_framework # Removed initialize_cli
+export API, Storage, Swarms, SwarmBase, Types, CommandHandler, Agents # Assuming these are intended exports
 
 # Constants for feature detection
 const PYTHON_WRAPPER_EXISTS = isfile(joinpath(@__DIR__, "python/python_bridge.jl"))
 const FRAMEWORK_EXISTS = isdir(joinpath(dirname(dirname(@__DIR__)), "packages/framework"))
 
-# Include the framework and CLI modules
+# Include the framework module
 include("framework/JuliaOSFramework.jl")
-include("cli/JuliaOSCLI.jl")
+# cli/JuliaOSCLI.jl was removed as it does not exist
 
-# Import the framework and CLI modules
+# Import the framework module
 using .JuliaOSFramework
-using .JuliaOSCLI
+# JuliaOSCLI was removed
 
 """
-    initialize(; mode::Symbol=:both, storage_path::String=joinpath(homedir(), ".juliaos", "juliaos.sqlite"))
+    initialize(; storage_path::String=joinpath(homedir(), ".juliaos", "juliaos.sqlite"))
 
-Initialize the JuliaOS system.
+Initialize the JuliaOS system (Framework only).
 
 # Arguments
-- `mode::Symbol`: The mode to initialize (:framework, :cli, or :both)
-- `storage_path::String`: Path to the storage database
+- `storage_path::String`: Path to the storage database for the framework.
 
 # Returns
 - `Bool`: true if initialization was successful
 """
-function initialize(; mode::Symbol=:both, storage_path::String=joinpath(homedir(), ".juliaos", "juliaos.sqlite"))
-    @info "Initializing JuliaOS..."
+function initialize(; storage_path::String=joinpath(homedir(), ".juliaos", "juliaos.sqlite"))
+    @info "Initializing JuliaOS Framework..."
 
-    success = true
+    framework_success = initialize_framework(storage_path=storage_path)
 
-    if mode == :framework || mode == :both
-        framework_success = initialize_framework(storage_path=storage_path)
-        success = success && framework_success
-    end
-
-    if mode == :cli || mode == :both
-        cli_success = initialize_cli()
-        success = success && cli_success
-    end
-
-    if success
-        @info "JuliaOS initialized successfully in mode: $mode"
+    if framework_success
+        @info "JuliaOS Framework initialized successfully."
     else
-        @warn "JuliaOS initialization had some issues in mode: $mode"
+        @warn "JuliaOS Framework initialization had some issues."
     end
 
-    return success
+    return framework_success
 end
 
 """
@@ -67,19 +56,6 @@ function initialize_framework(; storage_path::String=joinpath(homedir(), ".julia
     return JuliaOSFramework.initialize(storage_path=storage_path)
 end
 
-"""
-    initialize_cli(; config_path::String=joinpath(homedir(), ".juliaos", "cli_config.json"))
-
-Initialize the JuliaOS CLI backend.
-
-# Arguments
-- `config_path::String`: Path to the CLI configuration file
-
-# Returns
-- `Bool`: true if initialization was successful
-"""
-function initialize_cli(; config_path::String=joinpath(homedir(), ".juliaos", "cli_config.json"))
-    return JuliaOSCLI.initialize(config_path=config_path)
-end
+# initialize_cli function removed as CLI module does not exist
 
 end # module

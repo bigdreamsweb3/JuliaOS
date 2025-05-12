@@ -65,9 +65,11 @@ mutable struct PSOAlgorithm <: AbstractSwarmAlgorithm
     global_best_position::Vector{Float64}
     global_best_fitness::Float64
     problem_ref::Union{OptimizationProblem, Nothing} # Keep a reference
+    velocity_clamping_factor::Float64 # Factor to determine max velocity based on dimensional range
 
-    function PSOAlgorithm(; num_particles::Int=30, inertia::Float64=0.7, c1::Float64=1.5, c2::Float64=1.5)
-        new(num_particles, inertia, c1, c2, [], [], [], Inf, nothing)
+    function PSOAlgorithm(; num_particles::Int=30, inertia::Float64=0.7, c1::Float64=1.5, c2::Float64=1.5, vel_clamp_factor::Float64=0.2)
+        0.0 < vel_clamp_factor <= 1.0 || error("Velocity clamping factor must be between 0 (exclusive) and 1 (inclusive).")
+        new(num_particles, inertia, c1, c2, [], [], [], Inf, nothing, vel_clamp_factor)
     end
 end
 
@@ -103,23 +105,39 @@ function SwarmBase.initialize!(alg::PSOAlgorithm, problem::OptimizationProblem, 
     @info "PSOAlgorithm initialized with $(alg.num_particles) particles."
 end
 
-function SwarmBase.step!(alg::PSOAlgorithm, problem::OptimizationProblem, agents::Vector{String}, current_iter::Int, shared_data::Dict, config_params::Dict)::Union{SwarmSolution, Nothing}
-    @info "PSOAlgorithm: Step $current_iter"
-    
-    # This is where agent-based evaluation would happen if the objective function is distributed.
-    # For now, assume direct evaluation.
-    num_agents_available = length(agents)
-    # Example: if num_agents_available > 0, distribute particle evaluations among them.
-    # For simplicity, direct evaluation here:
+"""
+    get_all_particle_positions(alg::PSOAlgorithm)::Vector{Vector{Float64}}
 
-    for p in alg.particles
-        # Update velocity
+Returns a list of current positions for all particles. Used by Swarm Manager for evaluation.
+"""
+function SwarmBase.get_all_particle_positions(alg::PSOAlgorithm)::Vector{Vector{Float64}}
+    return [copy(p.position) for p in alg.particles]
+end
+
+"""
+    step!(alg::PSOAlgorithm, problem::OptimizationProblem, agents::Vector{String}, current_iter::Int, shared_data::Dict, config_params::Dict)
+
+PSO step: Updates particle velocities and positions based on their current fitness (assumed to be updated externally).
+Returns a list of the new particle positions that need to be evaluated.
+"""
+function SwarmBase.step!(alg::PSOAlgorithm, problem::OptimizationProblem, agents::Vector{String}, current_iter::Int, shared_data::Dict, config_params::Dict)::Vector{Vector{Float64}}
+    @debug "PSOAlgorithm: Advancing to step $current_iter. Updating velocities and positions."
+    
+    new_positions_for_evaluation = Vector{Vector{Float64}}(undef, alg.num_particles)
+
+    for (idx, p) in enumerate(alg.particles)
+        # Update velocity using current best_position (personal) and global_best_position
+        # These bests were updated based on fitnesses from the *previous* evaluation cycle.
         r1, r2 = rand(), rand()
         cognitive_component = alg.cognitive_coeff * r1 * (p.best_position - p.position)
         social_component = alg.social_coeff * r2 * (alg.global_best_position - p.position)
         p.velocity = alg.inertia_weight * p.velocity + cognitive_component + social_component
 
-        # TODO: Add velocity clamping if bounds are defined for velocity
+        # Velocity clamping
+        for d in 1:problem.dimensions
+            v_max_d = alg.velocity_clamping_factor * (problem.bounds[d][2] - problem.bounds[d][1])
+            p.velocity[d] = clamp(p.velocity[d], -v_max_d, v_max_d)
+        end
 
         # Update position
         p.position += p.velocity
@@ -128,61 +146,54 @@ function SwarmBase.step!(alg::PSOAlgorithm, problem::OptimizationProblem, agents
         for d in 1:problem.dimensions
             p.position[d] = clamp(p.position[d], problem.bounds[d][1], problem.bounds[d][2])
         end
-
-        # Evaluate fitness - This should be done by agents in a distributed manner.
-        # The algorithm step should prepare evaluation tasks.
-        # The Swarm._swarm_algorithm_loop will manage sending these tasks and collecting results.
-        # For now, we'll still do direct evaluation here as a placeholder for that distributed logic.
-        # In a real distributed setup, this `step!` might return a list of positions to evaluate,
-        # and then be called again with the fitness results.
-        # Or, it might directly publish tasks and then the main loop polls/waits.
         
-        # Conceptual: If agents are used for evaluation:
-        # 1. This function would identify which particles need evaluation.
-        # 2. It would prepare task data (e.g., particle index, position).
-        # 3. The main `_swarm_algorithm_loop` would then take these tasks,
-        #    publish them to agents, and collect fitness values.
-        # 4. These fitness values would then be fed back to update `p.current_fitness`.
-        
-        # Direct evaluation placeholder:
-        p.current_fitness = problem.objective_function(p.position)
+        new_positions_for_evaluation[idx] = copy(p.position)
+    end
+    
+    # Fitness evaluation is now handled by the Swarm manager loop using agents.
+    # This function returns the new positions that the Swarm manager will send for evaluation.
+    return new_positions_for_evaluation
+end
 
-        # Update personal best
+"""
+    update_fitness_and_bests!(alg::PSOAlgorithm, problem::OptimizationProblem, evaluated_fitnesses::Vector{Float64})
+
+Updates particle fitness, personal bests, and global best after external evaluation.
+`evaluated_fitnesses` must be in the same order as `alg.particles`.
+"""
+function update_fitness_and_bests!(alg::PSOAlgorithm, problem::OptimizationProblem, evaluated_fitnesses::Vector{Float64})
+    if length(evaluated_fitnesses) != alg.num_particles
+        @error "PSO: Number of evaluated fitnesses does not match number of particles."
+        return
+    end
+
+    for i in 1:alg.num_particles
+        p = alg.particles[i]
+        p.current_fitness = evaluated_fitnesses[i]
+
         if problem.is_minimization
             if p.current_fitness < p.best_fitness
                 p.best_fitness = p.current_fitness
                 p.best_position = copy(p.position)
             end
-        else # Maximization
-             if p.current_fitness > p.best_fitness # Corrected: was > for min too
-                p.best_fitness = p.current_fitness
-                p.best_position = copy(p.position)
-            end
-        end
-    end
-
-    # Update global best from personal bests
-    for p in alg.particles
-        if problem.is_minimization
             if p.best_fitness < alg.global_best_fitness
                 alg.global_best_fitness = p.best_fitness
                 alg.global_best_position = copy(p.best_position)
             end
         else # Maximization
-            if p.best_fitness > alg.global_best_fitness # Corrected: was > for min too
+            if p.current_fitness > p.best_fitness
+                p.best_fitness = p.current_fitness
+                p.best_position = copy(p.position)
+            end
+            if p.best_fitness > alg.global_best_fitness
                 alg.global_best_fitness = p.best_fitness
                 alg.global_best_position = copy(p.best_position)
             end
         end
     end
-    
-    # The step function in a distributed setup might return:
-    # - A list of tasks for agents (e.g., positions to evaluate).
-    # - Or, if it handles internal state updates based on received fitnesses,
-    #   it might return the current best solution or nothing if it's an intermediate step.
-    # For this placeholder, we return the current global best.
-    return SwarmSolution(copy(alg.global_best_position), alg.global_best_fitness)
+    @debug "PSO: Updated fitnesses and bests. Global best fitness: $(alg.global_best_fitness)"
 end
+
 
 function SwarmBase.should_terminate(alg::PSOAlgorithm, current_iter::Int, max_iter::Int, best_solution::Union{SwarmSolution,Nothing}, target_fitness::Union{Float64,Nothing}, problem::OptimizationProblem)::Bool
     if !isnothing(best_solution) && !isnothing(target_fitness)

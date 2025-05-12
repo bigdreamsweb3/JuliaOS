@@ -493,4 +493,58 @@ function clear_agent_memory_handler(req::HTTP.Request, agent_id::String)
     end
 end
 
+# --- Agent Fitness Evaluation Handler ---
+
+function evaluate_agent_fitness_handler(req::HTTP.Request, agent_id::String)
+    if isempty(agent_id)
+        return Utils.error_response("Agent ID cannot be empty", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"agent_id"))
+    end
+
+    payload = Utils.parse_request_body(req)
+    if isnothing(payload) || !isa(payload, Dict)
+        return Utils.error_response("Invalid or empty payload. Must be a JSON object.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
+    end
+
+    objective_function_id = get(payload, "objective_function_id", nothing)
+    candidate_solution = get(payload, "candidate_solution", nothing)
+    problem_context = get(payload, "problem_context", Dict{String,Any}()) # Default to empty if not provided
+
+    if isnothing(objective_function_id) || !isa(objective_function_id, String) || isempty(objective_function_id)
+        return Utils.error_response("Payload must include a non-empty 'objective_function_id' string.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("missing_field"=>"objective_function_id"))
+    end
+    if isnothing(candidate_solution) # Further type checks might be needed in Agents.jl
+        return Utils.error_response("Payload must include 'candidate_solution'.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("missing_field"=>"candidate_solution"))
+    end
+    if !isa(problem_context, Dict)
+         return Utils.error_response("'problem_context' must be a JSON object (Dict).", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"problem_context", "type_provided"=>typeof(problem_context)))
+    end
+
+    try
+        # This function will be implemented in Agents.jl
+        result = agents.Agents.evaluateAgentFitness(agent_id, objective_function_id, candidate_solution, problem_context)
+        
+        if get(result, "success", false)
+            return Utils.json_response(Dict("fitness_value" => result["fitness_value"], "agent_id" => agent_id, "objective_function_id" => objective_function_id), 200)
+        else
+            err_msg = get(result, "error", "Fitness evaluation failed")
+            details = Dict("agent_id"=>agent_id, "objective_function_id"=>objective_function_id, "raw_result"=>result)
+            
+            if occursin("Agent $agent_id not found", err_msg)
+                return Utils.error_response(err_msg, 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=details)
+            elseif occursin("not RUNNING or IDLE", err_msg) # Assuming an agent needs to be in a certain state
+                return Utils.error_response(err_msg, 409, error_code="AGENT_NOT_READY", details=details)
+            elseif occursin("Unknown objective function", err_msg)
+                return Utils.error_response(err_msg, 400, error_code="UNKNOWN_OBJECTIVE_FUNCTION", details=details)
+            elseif occursin("Invalid candidate solution format", err_msg)
+                 return Utils.error_response(err_msg, 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=details)
+            else
+                return Utils.error_response(err_msg, 500, error_code="FITNESS_EVALUATION_FAILED", details=details)
+            end
+        end
+    catch e
+        @error "Error in evaluate_agent_fitness_handler for agent $agent_id" exception=(e, catch_backtrace())
+        return Utils.error_response("Failed to evaluate fitness: $(sprint(showerror, e))", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
+    end
+end
+
 end

@@ -8,30 +8,27 @@ import ..agents.Agents # To check agent existence
 
 function get_all_metrics_handler(req::HTTP.Request)
     try
-        # In a real implementation, AgentMetrics.get_all_system_metrics() would be called
-        # For now, returning a placeholder
-        all_metrics = Dict(
-            "system_cpu_usage" => rand(),
-            "system_memory_usage" => rand() * 100,
-            "active_agents" => length(keys(Agents.AGENTS)), # Example, needs proper access
-            "total_tasks_processed" => rand(100:1000)
-        ) # Placeholder
-        return Utils.json_response(all_metrics)
+        # Call the new function from AgentMetrics.jl
+        system_summary_metrics = AgentMetrics.get_system_summary_metrics()
+        return Utils.json_response(system_summary_metrics)
     catch e
         @error "Error in get_all_metrics_handler" exception=(e, catch_backtrace())
-        return Utils.error_response("Failed to retrieve all metrics", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
+        return Utils.error_response("Failed to retrieve all system metrics: $(sprint(showerror, e))", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
     end
 end
 
 function reset_all_metrics_handler(req::HTTP.Request)
     try
-        # In a real implementation, AgentMetrics.reset_all_system_metrics!() would be called
-        # Placeholder action
-        @info "All system metrics reset (placeholder action)."
-        return Utils.json_response(Dict("message" => "All system metrics reset successfully"), 200)
+        # AgentMetrics.reset_metrics(nothing) clears all agent-specific metrics.
+        # If there were true system-only metrics (not derived from agents),
+        # a separate AgentMetrics.reset_system_only_metrics!() might be needed.
+        # For now, resetting all agent metrics effectively resets the aggregatable parts.
+        AgentMetrics.reset_metrics(nothing) # This clears METRICS_STORE
+        @info "All agent metrics have been reset. System summary metrics will reflect this."
+        return Utils.json_response(Dict("message" => "All agent metrics reset successfully. System summary metrics will be recalculated on next query."), 200)
     catch e
         @error "Error in reset_all_metrics_handler" exception=(e, catch_backtrace())
-        return Utils.error_response("Failed to reset all metrics", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
+        return Utils.error_response("Failed to reset all agent metrics: $(sprint(showerror, e))", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
     end
 end
 

@@ -261,49 +261,8 @@ function get_transaction_receipt_handler(req::HTTP.Request, network::String, tx_
     end
 end
 
-function send_transaction_handler(req::HTTP.Request, network::String)
-    if isempty(network)
-        return Utils.error_response("Network parameter cannot be empty.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"network"))
-    end
-    
-    body = Utils.parse_request_body(req)
-    if isnothing(body) || !isa(body, Dict)
-        return Utils.error_response("Request body must be a valid JSON object containing unsigned transaction parameters and wallet info.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT)
-    end
-
-    unsigned_tx_params = get(body, "tx_params", nothing)
-    wallet_chain_type_str = get(body, "wallet_chain_type", "") # "evm" or "solana"
-    pk_env_var = get(body, "pk_env_var", "JULIAOS_DEV_PRIVATE_KEY")
-
-    if isnothing(unsigned_tx_params) || !isa(unsigned_tx_params, Dict)
-        return Utils.error_response("Missing or invalid 'tx_params' in request body.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"tx_params"))
-    end
-    if isempty(wallet_chain_type_str) || !(wallet_chain_type_str in ["evm", "solana"])
-        return Utils.error_response("Missing or invalid 'wallet_chain_type' (must be 'evm' or 'solana').", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"wallet_chain_type"))
-    end
-    
-    wallet_chain_type_sym = Symbol(wallet_chain_type_str)
-
-    query_params = Dict(pairs(HTTP.queryparams(HTTP.URI(req.target))))
-    endpoint_url = get(query_params, "endpoint_url", nothing)
-    try
-        conn_dict = Blockchain.connect(network=network, endpoint_url=endpoint_url)
-        if !conn_dict["connected"]
-            return Utils.error_response("Failed to connect to network '$network' to send transaction.", 503, error_code=Utils.ERROR_CODE_EXTERNAL_SERVICE_ERROR, details=conn_dict)
-        end
-        
-        # Note: send_transaction_generic uses LocalDevWallet which is insecure.
-        # This endpoint should be used with extreme caution in development and NEVER in production with real keys.
-        tx_hash = Blockchain.send_transaction_generic(unsigned_tx_params, conn_dict, wallet_chain_type=wallet_chain_type_sym, pk_env_var=pk_env_var)
-        return Utils.json_response(Dict("network"=>network, "transaction_hash"=>tx_hash, "message"=>"Transaction sent successfully (using dev wallet)."))
-    catch e
-        @error "Error in send_transaction_handler for $network" exception=(e, catch_backtrace())
-        # Specific error from send_transaction_generic if wallet init fails or signing fails
-        if occursin("Failed to initialize wallet", sprint(showerror, e)) || occursin("Cannot sign", sprint(showerror, e))
-            return Utils.error_response("Transaction signing failed: $(sprint(showerror, e))", 400, error_code="TRANSACTION_SIGNING_FAILED")
-        end
-        return Utils.error_response("Failed to send transaction on $network: $(sprint(showerror, e))", 400, error_code="TRANSACTION_SEND_FAILED")
-    end
-end
+# The send_transaction_handler that relied on backend signing has been removed.
+# All transactions requiring signing are expected to be signed client-side (TypeScript)
+# and submitted via the /sendrawtransaction endpoint.
 
 end # module BlockchainHandlers

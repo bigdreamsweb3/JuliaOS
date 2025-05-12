@@ -160,17 +160,82 @@ function PriceFeedBase.get_historical_prices(feed::ChainlinkPriceFeed, base_asse
                                            interval::String="1d", limit::Int=100, 
                                            start_time::Union{DateTime, Nothing}=nothing,
                                            end_time::Union{DateTime, Nothing}=nothing)::PriceData
-    # Chainlink on-chain feeds primarily provide latest price. Historical data typically requires
-    # iterating through `getRoundData(roundId)` or using an external service that archives this data.
-    # This is a simplified implementation that might only fetch recent rounds or just the latest.
-    @warn "get_historical_prices for ChainlinkFeed is simplified and may not provide extensive history."
     
-    latest_price_point = get_latest_price(feed, base_asset, quote_asset)
-    
-    # For now, return only the latest price point as historical data
-    # A full implementation would need to query past rounds.
-    points = [latest_price_point]
+    @info "Fetching historical prices for $base_asset/$quote_asset from Chainlink feed $(feed.config.name)."
+    @warn "Chainlink on-chain historical data is fetched by round, 'interval' param is informational. Result count determined by 'limit' and time filters."
 
+    points = PricePoint[]
+    pair_key = uppercase("$(base_asset)/$(quote_asset)")
+
+    feed_details = _get_feed_details(feed, base_asset, quote_asset)
+    if isnothing(feed_details)
+        @error "Chainlink feed for $pair_key not found in registry for chain ID $(feed.config.chain_id)."
+        return PriceData(uppercase(base_asset), uppercase(quote_asset), "Chainlink-"*feed.config.name, interval, points)
+    end
+    feed_address, price_decimals = feed_details
+
+    network_name = feed.config.chain_id == 1 ? "ethereum" : "unknown_chain_$(feed.config.chain_id)"
+    conn_details = Blockchain.connect(network=network_name, endpoint_url=feed.config.rpc_url)
+    if !get(conn_details, "connected", false)
+        @error "Failed to connect to blockchain RPC for Chainlink feed: $(feed.config.rpc_url)."
+        return PriceData(uppercase(base_asset), uppercase(quote_asset), "Chainlink-"*feed.config.name, interval, points)
+    end
+
+    try
+        # 1. Get latest round data to find the current roundId
+        latest_round_data_payload = EthereumClient.encode_function_call_abi("latestRoundData()", Vector{Tuple{Any, String}}())
+        latest_hex_result = Blockchain.eth_call_generic(feed_address, latest_round_data_payload, conn_details)
+        
+        output_abi_types_round_data = ["uint80", "int256", "uint256", "uint256", "uint80"]
+        latest_decoded = EthereumClient.decode_function_result_abi(latest_hex_result, output_abi_types_round_data)
+
+        if length(latest_decoded) < 5 || !isa(latest_decoded[1], BigInt)
+            @error "Failed to decode latestRoundData or get current roundId for $pair_key."
+            return PriceData(uppercase(base_asset), uppercase(quote_asset), "Chainlink-"*feed.config.name, interval, points)
+        end
+        current_round_id = latest_decoded[1]
+
+        # 2. Iterate backwards for 'limit' rounds
+        # Function signature for getRoundData(uint80): "getRoundData(uint80)"
+        # Output types are the same as latestRoundData.
+        
+        for i in 0:(limit-1)
+            round_to_fetch = current_round_id - BigInt(i)
+            if round_to_fetch <= 0 break end # Stop if roundId becomes non-positive
+
+            get_round_data_payload = EthereumClient.encode_function_call_abi("getRoundData(uint80)", [ (round_to_fetch, "uint80") ])
+            hex_round_result = Blockchain.eth_call_generic(feed_address, get_round_data_payload, conn_details)
+            
+            decoded_round = EthereumClient.decode_function_result_abi(hex_round_result, output_abi_types_round_data)
+
+            if length(decoded_round) >= 5 && isa(decoded_round[2], BigInt) && isa(decoded_round[4], BigInt)
+                answer_val = decoded_round[2]
+                updatedAt_unix = decoded_round[4]
+                
+                price_val = Float64(answer_val) / (10^price_decimals)
+                timestamp_dt = unix2datetime(Float64(updatedAt_unix))
+
+                # Apply time filters
+                if !isnothing(start_time) && timestamp_dt < start_time continue end
+                if !isnothing(end_time) && timestamp_dt > end_time continue end
+                
+                # Chainlink feeds typically don't provide OHLCV for individual rounds.
+                # Price from `answer` is effectively the closing price for that round's update.
+                push!(points, PricePoint(timestamp_dt, price_val, 
+                                         open_price=price_val, high_price=price_val, 
+                                         low_price=price_val, close_price=price_val))
+            else
+                @warn "Failed to decode or insufficient data for round $round_to_fetch for $pair_key. Skipping."
+            end
+        end
+        
+        # Sort points by timestamp ascending if they were collected out of order (though iterating backwards should maintain order)
+        sort!(points, by = p -> p.timestamp)
+
+    catch e
+        @error "Error fetching historical Chainlink data for $pair_key" exception=(e, catch_backtrace())
+    end
+    
     return PriceData(uppercase(base_asset), uppercase(quote_asset), "Chainlink-"*feed.config.name, interval, points)
 end
 

@@ -184,15 +184,19 @@ Structure representing the configuration for a DEX.
 - `slippage::Float64`: Maximum slippage percentage (e.g., 0.5 for 0.5%)
 - `timeout::Int`: Timeout in seconds for API calls or RPC requests
 - `metadata::Dict{String, Any}`: Additional metadata
+- `protocol::String`: The protocol identifier (e.g., "uniswap", "sushiswap") - NEW
+- `version::String`: The protocol version (e.g., "v2", "v3") - NEW
 """
 struct DEXConfig
-    name::String
+    name::String # User-defined name for this specific configuration instance
+    protocol::String # Protocol identifier (e.g., "uniswap")
+    version::String  # Protocol version (e.g., "v2")
     chain_id::Int
     rpc_url::String
     router_address::String
     factory_address::String
     api_key::String # For DEXs that have a separate API (e.g., 0x API)
-    private_key::String # For on-chain order execution
+    private_key::String # For on-chain order execution - should be handled securely
     gas_limit::Int
     gas_price::Float64 # In Gwei or equivalent smallest unit for non-EVM
     slippage::Float64
@@ -201,19 +205,21 @@ struct DEXConfig
 
     function DEXConfig(;
         name::String,
+        protocol::String, # Added protocol
+        version::String,  # Added version
         chain_id::Int,
-        rpc_url::String, # Should come from main blockchain config
+        rpc_url::String, 
         router_address::String = "",
         factory_address::String = "",
         api_key::String = "",
-        private_key::String = "", # Should be handled by a secure wallet service
+        private_key::String = "", 
         gas_limit::Int = 300000,
-        gas_price::Float64 = 5.0, # Gwei
-        slippage::Float64 = 0.5, # Percentage
+        gas_price::Float64 = 5.0, 
+        slippage::Float64 = 0.5, 
         timeout::Int = 30,
         metadata::Dict{String, Any} = Dict{String, Any}()
     )
-        new(name, chain_id, rpc_url, router_address, factory_address,
+        new(name, protocol, version, chain_id, rpc_url, router_address, factory_address,
             api_key, private_key, gas_limit, gas_price, slippage, timeout, metadata)
     end
 end

@@ -148,6 +148,21 @@ catch e
     const Storage = StorageStub
 end
 
+# --- Include API Layer ---
+try
+    include("../api/API.jl") # Include the main API module
+    using .API # Make its exports (like start_server) available within JuliaOSFramework if needed
+    # To make JuliaOS.API.start_server() work, JuliaOS.jl will need to export API,
+    # and JuliaOSFramework should make API available to JuliaOS.jl.
+    # This is typically done by exporting API from JuliaOSFramework.
+    export API # This makes API accessible as JuliaOSFramework.API
+    @info "JuliaOSFramework: API module included and using'd successfully."
+catch e
+    @error "JuliaOSFramework: Critical error including API module." exception=(e, catch_backtrace())
+    module APIStub end # Define a stub if API loading fails
+    const API = APIStub # Make the stub available under the name API
+end
+
 
 # etc.
 

@@ -24,20 +24,18 @@ end
 
 # Include submodules or specific client implementations
 include("EthereumClient.jl") # Assuming EthereumClient.jl is in the same directory
-include("Wallet.jl")         # Include the new Wallet module
+# Wallet.jl is simplified and no longer directly used for signing by Blockchain.jl's core generic functions.
+# If any utility from Wallet.jl (like address validation) were needed, it could be `using .Wallet`
+# but for now, its primary role (dev wallet object) is not used by these generic functions.
 
 # Re-export key functionalities from submodules if they are namespaced
 using .EthereumClient 
-using .Wallet         
-# Or, to re-export all of EthereumClient's exports directly into Blockchain namespace:
-# export EthereumClient # This exports the module itself
-# For more granular control:
-# export call_contract, send_transaction # from EthereumClient if you want to re-export them directly
+# using .Wallet # Not strictly needed if Blockchain.jl doesn't use Wallet types/functions directly
 
-export connect, get_balance, send_transaction_generic, get_transaction_receipt_generic, is_node_healthy_generic
+export connect, get_balance, get_transaction_receipt_generic, is_node_healthy_generic
 export get_chain_id_generic, get_gas_price_generic, get_token_balance_generic, send_raw_transaction_generic, eth_call_generic
 export get_transaction_count_generic, estimate_gas_generic, get_decimals_generic
-export SUPPORTED_CHAINS_CONFIG, get_rpc_endpoint, get_chain_name_from_id # Updated exports
+export SUPPORTED_CHAINS_CONFIG, get_rpc_endpoint, get_chain_name_from_id 
 
 # Configuration for supported blockchain networks will be loaded from MainAppConfig
 
@@ -413,129 +411,6 @@ function estimate_gas_generic(tx_params::Dict, connection::Dict)::Int
 end
 
 """
-    send_transaction_generic(unsigned_tx_params::Dict, connection::Dict; 
-                             wallet_chain_type::Symbol, pk_env_var::String="JULIAOS_DEV_PRIVATE_KEY")::String
-
-Constructs (partially, for EVM), signs (using a development wallet), and sends a transaction.
-WARNING: Uses LocalDevWallet which is insecure for production.
-For EVM, `unsigned_tx_params` should contain `to`, `value_eth` (optional), `data` (optional).
-Nonce, gasPrice, gasLimit, chainId are fetched/calculated.
-For Solana, `unsigned_tx_params` must contain `message_bytes` (Vector{UInt8}) of the serialized transaction.
-"""
-function send_transaction_generic(unsigned_tx_params::Dict, connection::Dict; 
-                                  wallet_chain_type::Symbol, 
-                                  pk_env_var::String="JULIAOS_DEV_PRIVATE_KEY")::String
-    if !connection["connected"] 
-        error("Not connected to network: $(connection["network"]) for send_transaction_generic")
-    end
-    
-    # Initialize wallet (this will error if PK ENV var is not set)
-    wallet = Wallet.initialize_wallet(wallet_chain_type, env_var_for_pk=pk_env_var)
-    # initialize_wallet now errors internally if pk_hex is not found, so wallet should not be nothing here if that call succeeds.
-    # However, it can return nothing if chain_type is unsupported.
-    if isnothing(wallet)
-         error("Failed to initialize wallet for $wallet_chain_type (unsupported type or PK ENV var $pk_env_var problem).")
-    end
-    # If wallet.private_key_hex is somehow still nothing despite constructor erroring, this would catch it.
-    # This check is more for robustness if LocalDevWallet logic changes.
-    if isnothing(wallet.private_key_hex) 
-        error("Wallet initialized but private key is missing for $wallet_chain_type using ENV var $pk_env_var.")
-    end
-
-    sender_address = Wallet.get_address(wallet)
-    if isnothing(sender_address) # Should not happen if pk_hex is present due to placeholder derivation
-        error("Could not derive sender address from wallet for $wallet_chain_type.")
-    end
-
-    signed_tx_hex_or_base64 = ""
-    network = connection["network"] # This is the target network for the transaction
-
-    # Ensure wallet chain type matches network type for EVM/Solana
-    if wallet_chain_type == :evm && network == "solana"
-        error("EVM wallet type specified for Solana network. Mismatch.")
-    elseif wallet_chain_type == :solana && network != "solana"
-        error("Solana wallet type specified for non-Solana network $network. Mismatch.")
-    end
-
-    if wallet_chain_type == :evm
-        # --- Prepare EVM transaction parameters ---
-        # Caller MUST provide 'to' address.
-        # 'value_eth' (amount in Ether) and 'data' (hex string) are optional.
-        # Nonce, gasPrice, gasLimit, and chainId will be fetched/calculated.
-        
-        to_address = get(unsigned_tx_params, "to", "")
-        if !isa(to_address, String) || !startswith(to_address, "0x") || length(to_address) != 42
-            error("EVM transaction 'to' address is required and must be a valid hex string (e.g., 0x...). Got: '$to_address'")
-        end
-
-        # Fetch dynamic parameters
-        current_nonce = get_transaction_count_generic(sender_address, connection)
-        current_gas_price_gwei = get_gas_price_generic(connection)
-        
-        # Convert to Wei and hex for the transaction
-        gas_price_wei = BigInt(round(current_gas_price_gwei * 10^9))
-        gas_price_hex = "0x" * string(gas_price_wei, base=16)
-        
-        value_eth_str = string(get(unsigned_tx_params, "value_eth", "0.0"))
-        value_eth = tryparse(Float64, value_eth_str)
-        if isnothing(value_eth) error("'value_eth' must be a number string. Got: $value_eth_str") end
-        value_wei_hex = EthereumClient.eth_to_wei_str(value_eth)
-        
-        data_payload = string(get(unsigned_tx_params, "data", "0x"))
-        if !startswith(data_payload, "0x") data_payload = "0x" * data_payload end
-
-
-        # Estimate gas
-        estimate_params = Dict(
-            "from" => sender_address,
-            "to" => to_address,
-            "value" => value_wei_hex,
-            "data" => data_payload
-        )
-        estimated_gas_val = estimate_gas_generic(estimate_params, connection)
-        if estimated_gas_val == -1 error("Gas estimation failed for transaction.") end
-        gas_limit_hex = "0x" * string(estimated_gas_val, base=16)
-
-        # Chain ID
-        chain_id_val = get(connection, "chain_id_retrieved", -1)
-        if chain_id_val == -1 # Should have been fetched by connect() for EVM
-            retrieved_cid = get_chain_id_generic(connection) # Try again
-            if retrieved_cid == -1 error("Could not determine chainId for EVM transaction on network $network.") end
-            chain_id_val = retrieved_cid
-        end
-
-        evm_tx_to_sign = Dict(
-            "nonce" => current_nonce, # Wallet.sign_transaction_evm expects integer nonce
-            "gasPrice" => gas_price_hex,
-            "gasLimit" => gas_limit_hex,
-            "to" => to_address,
-            "value" => value_wei_hex,
-            "data" => data_payload,
-            "chainId" => chain_id_val 
-        )
-        @info "Signing EVM transaction for $network with params:" params=evm_tx_to_sign
-        signed_tx_hex_or_base64 = Wallet.sign_transaction_evm(wallet, evm_tx_to_sign)
-
-    elseif wallet_chain_type == :solana
-        @warn "Solana transaction construction in send_transaction_generic is a major placeholder."
-        # For Solana, the caller is responsible for constructing the full transaction message bytes.
-        # This typically involves using @solana/web3.js or a similar library on the client-side
-        # to build the transaction, serialize its message, and then pass those bytes.
-        message_bytes = get(unsigned_tx_params, "message_bytes", nothing)
-        if isnothing(message_bytes) || !isa(message_bytes, Vector{UInt8})
-            error("For Solana, 'message_bytes' (Vector{UInt8}) must be provided in tx_params.")
-        end
-        @info "Signing Solana transaction message for $network..."
-        signed_tx_hex_or_base64 = Wallet.sign_transaction_solana(wallet, message_bytes) # This returns base64 signature
-    else
-        error("Unsupported wallet_chain_type for signing: $wallet_chain_type")
-    end
-
-    @info "Sending signed transaction to $network..."
-    return send_raw_transaction_generic(signed_tx_hex_or_base64, connection)
-end
-
-
 function send_raw_transaction_generic(signed_tx_hex::String, connection::Dict)::String
     if !connection["connected"] error("Not connected: $(connection["network"])") end
     network = connection["network"]

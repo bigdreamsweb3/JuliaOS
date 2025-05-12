@@ -56,13 +56,19 @@ function create_swarm_handler(req::HTTP.Request)
         end
 
         obj_func_name = get(problem_def_data, "objective_function_name", "default_placeholder_objective")
-        # Objective function resolution is critical and complex.
-        # For a real system, this would involve a registry or secure dynamic lookup.
-        # Using a placeholder function for now.
-        objective_function = (pos_vec::Vector{Float64}) -> begin
-            @warn "API created swarm using placeholder objective function for '$obj_func_name'. Implement proper function resolution."
-            return sum(pos_vec) # Example: sum of positions
+        obj_func_name = get(problem_def_data, "objective_function_name", "default_sum_objective") # Default if not provided
+        
+        # Resolve the objective function using the name from the registry in Swarms.jl
+        objective_function = Swarms.get_objective_function_by_name(obj_func_name)
+        if objective_function == Swarms.get_objective_function_by_name("default_sum_objective") && obj_func_name != "default_sum_objective"
+            # This means the requested function was not found, and it fell back to default.
+            # Depending on strictness, this could be an error or a warning.
+            # For now, allow fallback but it's better if API users specify valid, registered functions.
+            @warn "Objective function '$obj_func_name' not found in Swarm registry, using default sum objective for swarm '$name'."
+        elseif obj_func_name == "default_placeholder_objective" && objective_function == Swarms.get_objective_function_by_name("default_sum_objective")
+             @warn "API create_swarm: 'objective_function_name' not provided in problem_definition, using default_sum_objective for swarm '$name'."
         end
+
 
         problem_def = SwarmBase.OptimizationProblem(dims, bounds_tuples, objective_function; is_minimization=is_min)
 
@@ -198,7 +204,9 @@ function add_agent_to_swarm_handler(req::HTTP.Request, swarm_id::String)
             # Check specific reason
             if isnothing(Swarms.getSwarm(swarm_id))
                 return Utils.error_response("Swarm $swarm_id not found.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=Dict("swarm_id"=>swarm_id))
-            elseif isnothing(Swarms.Agents.getAgent(agent_id)) # Assuming Agents module is accessible
+            # Corrected path to Agents.getAgent:
+            # The `import ..agents.Agents` at the top makes `Agents` available directly.
+            elseif isnothing(Agents.getAgent(agent_id)) 
                 return Utils.error_response("Agent $agent_id not found.", 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=Dict("agent_id"=>agent_id))
             else # Other failure, e.g. agent already present (which addAgentToSwarm handles as success with info log)
                  return Utils.error_response("Failed to add agent $agent_id to swarm $swarm_id.", 400, error_code="AGENT_ADD_TO_SWARM_FAILED")

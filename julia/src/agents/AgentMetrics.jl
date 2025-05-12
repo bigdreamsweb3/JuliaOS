@@ -13,8 +13,21 @@ using Dates, DataStructures, Statistics, Logging
 # Assumes Config.jl defines "module Config" and is a sibling to this file
 # within the "agents" directory/module scope.
 import .Config: get_config
+# Import AGENTS store and lock from Agents.jl for system-wide metrics
+try
+    import ..Agents: AGENTS, AGENTS_LOCK, AgentStatus, RUNNING, PAUSED # Assuming these are exported or accessible
+catch e
+    @warn "AgentMetrics.jl: Could not import from Agents.jl for system metrics. System metrics will be limited."
+    # Define stubs if import fails
+    const AGENTS = Dict()
+    const AGENTS_LOCK = ReentrantLock()
+    @enum AgentStatusImportFallback RUNNING_FALLBACK PAUSED_FALLBACK
+    const RUNNING = RUNNING_FALLBACK
+    const PAUSED = PAUSED_FALLBACK
+end
 
-export record_metric, get_metrics, get_agent_metrics, reset_metrics,
+
+export record_metric, get_metrics, get_agent_metrics, reset_metrics, get_system_summary_metrics,
        MetricType, COUNTER, GAUGE, HISTOGRAM, SUMMARY # Export MetricType enum and its values
 
 # Metric types
@@ -272,5 +285,73 @@ end
 
 # No __init__ function needed for this module as it relies on Config.jl's initialization
 # and its constants are defined at compile time.
+
+
+"""
+    get_system_summary_metrics()::Dict{String, Any}
+
+Retrieves aggregated system-wide metrics.
+"""
+function get_system_summary_metrics()::Dict{String, Any}
+    summary = Dict{String, Any}()
+
+    # Agent counts
+    total_agents = 0
+    active_agents = 0 # RUNNING or PAUSED
+    
+    # This part requires access to Agents.AGENTS and Agents.AGENTS_LOCK
+    # Ensure these are correctly imported or passed if AgentMetrics is truly standalone.
+    # For now, assuming direct import works as per the try-catch block above.
+    if @isdefined(AGENTS) && @isdefined(AGENTS_LOCK)
+        lock(AGENTS_LOCK) do
+            total_agents = length(AGENTS)
+            for agent_instance in values(AGENTS)
+                # Assuming agent_instance has a .status field of type AgentStatus
+                if agent_instance.status == RUNNING || agent_instance.status == PAUSED
+                    active_agents += 1
+                end
+            end
+        end
+    else
+        @warn "Cannot access Agents.AGENTS for system metrics due to import issue."
+    end
+    summary["total_agents_managed"] = total_agents
+    summary["active_agents_running_or_paused"] = active_agents
+
+    # Aggregated metrics from METRICS_STORE
+    total_tasks_executed_all_types = 0
+    # Example: Sum a specific counter metric across all agents
+    # This requires knowing the names of metrics that agents might record.
+    # Let's assume agents record "tasks_executed_direct" and "tasks_executed_queued" as COUNTERs.
+
+    lock(METRICS_LOCK) do
+        for (agent_id, agent_metrics_map) in METRICS_STORE
+            for metric_name_to_sum in ["tasks_executed_direct", "tasks_executed_queued", "skills_executed"]
+                if haskey(agent_metrics_map, metric_name_to_sum)
+                    metric_buffer = agent_metrics_map[metric_name_to_sum]
+                    if !isempty(metric_buffer)
+                        # For a COUNTER, the "current" value is the latest recorded value,
+                        # which represents the total count for that agent if it's a monotonically increasing counter.
+                        # If it's a gauge that resets, this logic would be different.
+                        # Assuming these are true counters.
+                        # We sum the latest value of these counters from each agent.
+                        latest_metric_entry = last(metric_buffer) # Get the most recent entry
+                        if latest_metric_entry.type == COUNTER && isa(latest_metric_entry.value, Number)
+                            total_tasks_executed_all_types += latest_metric_entry.value
+                        end
+                    end
+                end
+            end
+        end
+    end
+    summary["total_tasks_executed_across_all_agents"] = total_tasks_executed_all_types
+    
+    # Placeholder for actual system CPU/Memory (would require OS-specific calls or a library)
+    summary["system_cpu_usage_placeholder"] = rand() 
+    summary["system_memory_usage_mb_placeholder"] = rand(50:500) 
+
+    summary["last_updated"] = string(now(UTC))
+    return summary
+end
 
 end # module AgentMetrics

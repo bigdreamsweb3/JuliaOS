@@ -44,6 +44,7 @@ function register_routes()
     @get BASE_PATH * "/agents/{agent_id::String}/tasks/{task_id::String}" AgentHandlers.get_task_status_handler # Get status of a specific task
     @get BASE_PATH * "/agents/{agent_id::String}/tasks/{task_id::String}/result" AgentHandlers.get_task_result_handler # Get result of a completed/failed task
     @post BASE_PATH * "/agents/{agent_id::String}/tasks/{task_id::String}/cancel" AgentHandlers.cancel_task_handler # Attempt to cancel a task
+    @post BASE_PATH * "/agents/{agent_id::String}/evaluate_fitness" AgentHandlers.evaluate_agent_fitness_handler # Request agent to evaluate fitness for a given solution
 
     # --- Agent Memory Access ---
     @get BASE_PATH * "/agents/{agent_id::String}/memory/{key::String}" AgentHandlers.get_agent_memory_handler # Get a value from agent's memory
@@ -124,6 +125,8 @@ function register_routes()
     @post BASE_PATH * "/dex/{protocol::String}/{version::String}/orders" DexHandlers.create_dex_order_handler
     # Get status of a specific order
     @get BASE_PATH * "/dex/{protocol::String}/{version::String}/orders/{order_id::String}" DexHandlers.get_dex_order_status_handler
+    # Associate a transaction hash with a previously created order_id
+    @post BASE_PATH * "/dex/{protocol::String}/{version::String}/orders/{order_id::String}/txhash" DexHandlers.associate_tx_hash_handler
     # Attempt to cancel an order
     @delete BASE_PATH * "/dex/{protocol::String}/{version::String}/orders/{order_id::String}" DexHandlers.cancel_dex_order_handler
 
@@ -152,9 +155,7 @@ function register_routes()
     @post BASE_PATH * "/blockchain/{network::String}/sendrawtransaction" BlockchainHandlers.send_raw_transaction_handler
     # Get the receipt of a transaction
     @get BASE_PATH * "/blockchain/{network::String}/receipt/{tx_hash::String}" BlockchainHandlers.get_transaction_receipt_handler
-    # Send a transaction (unsigned params in POST body, will be signed by dev wallet)
-    # WARNING: Uses LocalDevWallet, insecure for production.
-    @post BASE_PATH * "/blockchain/{network::String}/sendtransaction" BlockchainHandlers.send_transaction_handler
+    # The /sendtransaction endpoint that used backend signing has been removed.
     # TODO: Add more specific routes as needed, e.g., for specific contract interactions if generalized eth_call is too broad.
 
     # ----------------------------------------------------------------------
