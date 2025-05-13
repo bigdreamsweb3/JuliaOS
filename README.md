@@ -167,9 +167,6 @@ flowchart TD
     Core --> Raydium
 ```
 
-**Summary:**  
-JuliaOS provides a unified, extensible platform for building, running, and monitoring cross-chain agents and swarms, with robust risk management, analytics, and support for both EVM and Solana DEXes.
-
 ## 🧑‍🤝‍🧑 Community & Contribution
 
 JuliaOS is an open-source project, and we welcome contributions from the community! Whether you're a developer, a researcher, or an enthusiast in decentralized technologies, AI, and blockchain, there are many ways to get involved.
