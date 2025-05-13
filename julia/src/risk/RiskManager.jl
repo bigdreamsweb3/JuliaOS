@@ -1,11 +1,11 @@
 """
-RiskManagement.jl - Global risk management module for JuliaOS agents/DEXes
+RiskManager.jl - Global risk management module for JuliaOS agents/DEXes
 
 Enforces max trade size, stop-loss/take-profit, exposure limits, daily loss limits, and custom rules
 based on config/risk_management.toml.
 """
 
-module RiskManagement
+module RiskManager
 
 using TOML
 using Dates
@@ -103,4 +103,4 @@ function enforce_risk(trade_ctx::Dict, state::RiskState)
     return :ok
 end
 
-end # module RiskManagement
+end # module RiskManager

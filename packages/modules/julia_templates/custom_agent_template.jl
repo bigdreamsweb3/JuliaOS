@@ -47,7 +47,7 @@ sushiswap_config = DEXBase.DEXConfig(
 uniswap_dex = DEX.create_dex_instance("uniswap", "v2", uniswap_config)
 sushiswap_dex = DEX.create_dex_instance("sushiswap", "v1", sushiswap_config)
 
-# Example: Use in ArbitrageStrategy
+# Example: Use in Multi-DEX ArbitrageStrategy
 tokens = [
     DEXBase.DEXToken("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "WETH", "Wrapped Ether", 18, 1),
     DEXBase.DEXToken("0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "USDC", "USD Coin", 6, 1),
@@ -59,12 +59,23 @@ dex_configs = [
 ]
 
 arb_strategy = TradingStrategy.ArbitrageStrategy(
-    "Uniswap-SushiSwap-Arb",
+    "MultiDEX-Arb",
     dex_configs,
     tokens;
     min_profit_threshold_percent = 0.1,
     max_trade_size_usd = 1000.0,
+    optimization_params = Dict(
+        "swap_gas_units" => Dict(
+            "uniswap_v2_swap" => 150000,
+            "default_swap" => 150000
+        ),
+        "simulated_slippage_pct_per_10k_usd" => 0.05
+    )
 )
 
-# Now you can use arb_strategy in your agent logic
-println("Created ArbitrageStrategy with Uniswap and SushiSwap DEXes.")
+# Example agent loop: monitor and execute arbitrage
+while true
+    result = TradingStrategy.execute_strategy(arb_strategy)
+    println("Arbitrage result: ", result)
+    sleep(30)  # Wait before next check
+end

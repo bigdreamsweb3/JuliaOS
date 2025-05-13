@@ -1,6 +1,5 @@
 # JuliaOS Open Source AI Agent & Swarm Framework
 
-
 *joo-LEE-uh-oh-ESS* /ˈdʒuː.li.ə.oʊ.ɛs/
 
 **Noun**
@@ -37,61 +36,140 @@ JuliaOS is a comprehensive framework for building decentralized applications (DA
 - 🚩 [Use Cases](https://juliaos.gitbook.io/juliaos-documentation-hub/features/use-cases): All use cases and examples
 - 🔵 [API](https://juliaos.gitbook.io/juliaos-documentation-hub/api-documentation/api-reference): Julia backend API reference
 
-
-
 ## Quick Start
 
 ### Prerequisites
 
+#### Option 1: Using Docker (Recommended)
+...
 
-### Installation and Setup
+#### Option 2: Manual Installation
+...
 
+### Creating Agents and Swarms (TypeScript & Python)
 
+#### TypeScript (TS) Agents & Swarms
 
+1. **Install dependencies and build the project:**
+   ```bash
+   npm install
+   npm run build
+   ```
 
-## Architecture Overview & Flow
+2. **Create a new agent or swarm using the provided templates:**
+   - Copy and customize the template in `packages/modules/julia_templates/custom_agent_template.jl` for Julia-based agents.
+   - For TypeScript agents, use the templates in `packages/templates/agents/` (e.g., `custom_agent_template.jl`, `src/AgentsService.ts`).
 
-graph TD
+3. **Configure your agent or swarm:**
+   - Edit the configuration files or pass parameters in your TypeScript code.
+   - Use the TypeScript SDK (`packages/core/src/api/ApiClient.ts`) to interact with the Julia backend, create agents, submit objectives, and manage swarms.
+
+4. **Run your agent or swarm:**
+   - Use the CLI or your own script to start the agent.
+   - Example (TypeScript):
+     ```typescript
+     import { ApiClient } from '@juliaos/core';
+     const client = new ApiClient();
+     // Create and run agent logic here
+     ```
+
+#### Python Agents & Swarms
+
+1. **Install the Python wrapper:**
+   ```bash
+   pip install -e ./packages/pythonWrapper
+   ```
+
+2. **Create a new agent or swarm using the Python templates:**
+   - Use the templates in `packages/templates/python_templates/` (e.g., `orchestration_template.py`, `llm_integration_examples/`).
+
+3. **Configure and run your agent:**
+   - Import the Python wrapper and use the client to interact with JuliaOS.
+   - Example:
+     ```python
+     from juliaos_wrapper import client
+     api = client.JuliaOSApiClient()
+     # Create and run agent logic here
+     ```
+
+4. **Submit objectives or manage swarms:**
+   - Use the Python API to submit objectives, create swarms, and monitor results.
+
+## Architecture Overview
+
+JuliaOS is built as a modular, multi-layered system for cross-chain, agent-based, and swarm intelligence applications. The architecture is designed for extensibility, security, and high performance, supporting both EVM and Solana ecosystems.
+
+**Key Layers:**
+
+- **User Logic & SDKs**
+  - **TypeScript SDK & Logic Layer:**  
+    - Location: `packages/core/`, `packages/templates/agents/`
+    - Users write agent and swarm logic in TypeScript, using the SDK to interact with the Julia backend.
+  - **Python Wrapper/SDK & Logic Layer:**  
+    - Location: `packages/pythonWrapper/`, `packages/templates/python_templates/`
+    - Users write agent and orchestration logic in Python, using the wrapper to interact with JuliaOS.
+
+- **JuliaOS Backend**
+  - **Layer 1: Julia Core Engine (Foundation Layer):**  
+    - Location: `julia/src/`
+    - Implements core backend logic: agent orchestration, swarm algorithms, neural networks, portfolio optimization, blockchain/DEX integration, price feeds, storage, and trading strategies.
+  - **Layer 2: Julia API Layer (Interface Layer, MCP-Enabled):**  
+    - Location: `julia/src/api/`
+    - Exposes all backend functionality via API endpoints (REST/gRPC/MCP), validates and dispatches requests, formats responses, and enforces API-level security.
+  - **Layer 3: Rust Security Component (Specialized Security Layer):**  
+    - Location: `packages/rust_signer/`
+    - Handles all cryptographic operations (private key management, transaction signing, HD wallet derivation) in a secure, memory-safe environment, called via FFI from Julia.
+
+- **DEX Integrations**
+  - Modular DEX support for Uniswap, SushiSwap, PancakeSwap, QuickSwap, TraderJoe (EVM), and Raydium (Solana) via dedicated modules in `julia/src/dex/`.
+  - Each DEX module implements the AbstractDEX interface for price, liquidity, order creation, trade history, and token/pair discovery.
+
+- **Risk Management & Analytics**
+  - Global risk management is enforced via `config/risk_management.toml` and `julia/src/trading/RiskManagement.jl`.
+  - Real-time trade logging and analytics are provided by `julia/src/trading/TradeLogger.jl`, outputting to both console and file.
+
+- **Community & Contribution**
+  - Open-source, community-driven development with clear contribution guidelines and modular extension points for new agents, DEXes, and analytics.
+
+**Architecture Diagram:**
+
+```mermaid
+flowchart TD
     subgraph User Logic & SDKs
-        L4_TS[TypeScript Agent/Swarm Logic] --> L4_SDK[TS SDK (MCP Aware)];
-        L5_Py[Python Agent/Swarm Logic / LangChain / ADK] --> L5_Wrap[Python Wrapper/SDK (MCP Aware)];
+        TS[TypeScript Agent/Swarm Logic] --> TS_SDK[TS SDK]
+        Py[Python Agent/Swarm Logic] --> Py_SDK[Python Wrapper/SDK]
     end
 
     subgraph JuliaOS Backend
-        L2_API[Julia API Layer (gRPC/REST + MCP Endpoints)];
-        subgraph Layer 1: Julia Core Engine
-            L1_Orch[Orchestration / Agent Mgt / Swarm Engine / NN / Portfolio Opt / Etc.];
-            L1_BC[High-Level Blockchain Interaction];
-            L1_SignCoord[Signing Coordinator];
-        end
-        subgraph Layer 3: Secure Signing
-            L3_Rust[Rust Security Component (Signing, Key Handling)];
-        end
+        API[Julia API Layer]
+        Core[Julia Core Engine]
+        Rust[Secure Rust Signer]
     end
 
-    %% Interactions
-    L4_SDK --> L2_API;
-    L5_Wrap --> L2_API;
+    subgraph DEX Integrations
+        Uniswap[UniswapDEX]
+        SushiSwap[SushiSwapDEX]
+        PancakeSwap[PancakeSwapDEX]
+        QuickSwap[QuickSwapDEX]
+        TraderJoe[TraderJoeDEX]
+        Raydium[RaydiumDEX (Solana, via Python FFI)]
+    end
 
-    L2_API --> L1_Orch;
-    L2_API --> L1_BC;
-    L2_API --> L1_SignCoord;
-
-    L1_SignCoord --> L3_Rust{FFI Call};
-    L3_Rust --> L1_SignCoord{Return Signed Tx/Error};
-
-    %% Style
-    style L1_Orch fill:#f9f,stroke:#333,stroke-width:2px;
-    style L1_BC fill:#f9f,stroke:#333,stroke-width:2px;
-    style L1_SignCoord fill:#f9f,stroke:#333,stroke-width:2px;
-    style L2_API fill:#ccf,stroke:#333,stroke-width:2px;
-    style L3_Rust fill:#f66,stroke:#333,stroke-width:4px;
-    style L4_TS fill:#9cf,stroke:#333,stroke-width:2px;
-    style L4_SDK fill:#9cf,stroke:#333,stroke-width:2px;
-    style L5_Py fill:#9fc,stroke:#333,stroke-width:2px;
-    style L5_Wrap fill:#9fc,stroke:#333,stroke-width:2px;
-
+    TS_SDK --> API
+    Py_SDK --> API
+    API --> Core
+    Core --> Rust
+    Core --> Uniswap
+    Core --> SushiSwap
+    Core --> PancakeSwap
+    Core --> QuickSwap
+    Core --> TraderJoe
+    Core --> Raydium
 ```
+
+**Summary:**  
+JuliaOS provides a unified, extensible platform for building, running, and monitoring cross-chain agents and swarms, with robust risk management, analytics, and support for both EVM and Solana DEXes.
+
 ## 🧑‍🤝‍🧑 Community & Contribution
 
 JuliaOS is an open-source project, and we welcome contributions from the community! Whether you're a developer, a researcher, or an enthusiast in decentralized technologies, AI, and blockchain, there are many ways to get involved.

@@ -570,6 +570,24 @@ function find_arbitrage_opportunities(strat::ArbitrageStrategy)
 end
 
 function execute_strategy(strategy::OptimalPortfolioStrategy; historical_prices_matrix=nothing, num_days_history=90, interval="1d")
+    # Global risk enforcement at function entry
+    try
+        import ..RiskManagement
+        state = RiskManagement.RiskState(0.0, now(), Dict{String, Float64}())
+        trade_ctx = Dict(
+            "dex_name" => "global",
+            "trade_size_usd" => 0.0,
+            "asset" => "global",
+            "new_exposure" => 0.0,
+            "entry_price" => 0.0,
+            "current_price" => 0.0,
+            "account_balance" => 0.0
+        )
+        RiskManagement.enforce_risk(trade_ctx, state)
+    catch e
+        @error "Risk check failed at entry to execute_strategy: $e"
+        error("Risk check failed: $e")
+    end
     @info "Executing OptimalPortfolio: $(strategy.name)"
     hist_prices = !isnothing(historical_prices_matrix) ? historical_prices_matrix : begin
         @info "Fetching historical data for OptimalPortfolio..."
@@ -599,6 +617,24 @@ function backtest_strategy(
     start_date=nothing, 
     end_date=nothing
 )::Dict{String,Any}
+    # Global risk enforcement at function entry
+    try
+        import ..RiskManagement
+        state = RiskManagement.RiskState(0.0, now(), Dict{String, Float64}())
+        trade_ctx = Dict(
+            "dex_name" => "global",
+            "trade_size_usd" => 0.0,
+            "asset" => "global",
+            "new_exposure" => 0.0,
+            "entry_price" => 0.0,
+            "current_price" => 0.0,
+            "account_balance" => initial_capital
+        )
+        RiskManagement.enforce_risk(trade_ctx, state)
+    catch e
+        @error "Risk check failed at entry to backtest_strategy: $e"
+        error("Risk check failed: $e")
+    end
     @info "Backtesting $(strategy.name) with Risk Management and Slippage Model: $slippage_model_params"
     td_per_year=252
     # isa(strategy,ArbitrageStrategy) && (@warn "Arbitrage backtest not implemented."; return Dict("status"=>"Not Implemented")) # Removed early exit
@@ -734,6 +770,14 @@ function backtest_strategy(
                     log_entry_details[:trailing_sl_active_at_trade] = trailing_stop_active_for_position
                     log_entry_details[:trailing_sl_price_at_trade] = active_trailing_stop_price
 
+
+                    # Real-time trade logging
+                    try
+                        import ..TradeLogger
+                        TradeLogger.log_trade(log_entry_details)
+                    catch e
+                        @warn "TradeLogger failed: $e"
+                    end
 
                     push!(trade_log, NamedTuple(log_entry_details))
                     
