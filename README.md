@@ -150,7 +150,8 @@ flowchart TD
         PancakeSwap[PancakeSwapDEX]
         QuickSwap[QuickSwapDEX]
         TraderJoe[TraderJoeDEX]
-        Raydium[RaydiumDEX (Solana, via Python FFI)]
+        %% This line is fixed: text enclosed in quotes
+        Raydium["RaydiumDEX (Solana, via Python FFI)"]
     end
 
     %% Connections
