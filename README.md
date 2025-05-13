@@ -210,7 +210,7 @@ We appreciate all forms of contributions, including but not limited to:
 
 ### Getting Started with Contributions
 
-1.  **Set Up Your Environment:** Follow the [Quick Start](#quick-start) or [Local machine deployment](#local-machine-deployment-and-running-guide) sections to get JuliaOS running on your system. Ensure you can build the project using `npm run build`.
+1.  **Set Up Your Environment:** Follow the [Quick Start](#quick-start)
 2.  **Find an Issue:** Browse the [GitHub Issues](https://github.com/Juliaoscode/JuliaOS/issues) page. Look for issues tagged with `good first issue` or `help wanted` if you're new.
 3.  **Discuss Your Plans:** For new features or significant changes, it's a good idea to open an issue first to discuss your ideas with the maintainers and community.
 4.  **Contribution Workflow:**
@@ -224,7 +224,7 @@ We appreciate all forms of contributions, including but not limited to:
     * Clearly describe the changes in your PR and link to any relevant issues.
     * Be responsive to feedback and participate in the review process.
 
-### Contribution Guidelines (To Be Established)
+### Contribution Guidelines
 
 We are in the process of formalizing our contribution guidelines. In the meantime, please aim for:
 
@@ -234,12 +234,7 @@ We are in the process of formalizing our contribution guidelines. In the meantim
 
 We plan to create a `CONTRIBUTING.md` file with detailed guidelines soon.
 
-### Code of Conduct (To Be Established)
+### Code of Conduct
 
 We are committed to fostering an open, welcoming, and inclusive community. All contributors and participants are expected to adhere to a Code of Conduct. We plan to adopt and publish a `CODE_OF_CONDUCT.md` file (e.g., based on the Contributor Covenant) in the near future.
 
-### Questions?
-
-If you have questions about contributing or want to discuss ideas, please open an issue or start a discussion on GitHub.
-
-Thank you for your interest in JuliaOS! We look forward to your contributions and building a vibrant community together.
