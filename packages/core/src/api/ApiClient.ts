@@ -1,6 +1,7 @@
 // packages/core/src/api/ApiClient.ts
 
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, AxiosError, InternalAxiosRequestConfig } from 'axios';
+
 
 // --- Type Definitions ---
 export interface JuliaApiErrorDetail {
@@ -120,7 +121,7 @@ export class JuliaOSClientTS {
     });
 
     this.axiosInstance.interceptors.request.use(
-      (config: AxiosRequestConfig) => {
+      (config: InternalAxiosRequestConfig) => {
         if (this.apiKey) {
           config.headers = config.headers || {};
           config.headers['X-API-Key'] = this.apiKey;
