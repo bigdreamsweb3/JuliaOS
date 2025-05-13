@@ -40,11 +40,9 @@ JuliaOS is a comprehensive framework for building decentralized applications (DA
 
 ### Prerequisites
 
-#### Option 1: Using Docker (Recommended)
-...
-
-#### Option 2: Manual Installation
-...
+- **Node.js**: Ensure you have Node.js installed. You can download it from [nodejs.org](https://nodejs.org/).
+- **Julia**: Ensure you have Julia installed. You can download it from [julialang.org](https://julialang.org/).
+- **Python**: Ensure you have Python installed. You can download it from [python.org](https://www.python.org/).
 
 ### Creating Agents and Swarms (TypeScript & Python)
 
@@ -135,18 +133,18 @@ JuliaOS is built as a modular, multi-layered system for cross-chain, agent-based
 
 ```mermaid
 flowchart TD
-    subgraph User Logic & SDKs
+    subgraph "User Logic & SDKs"
         TS[TypeScript Agent/Swarm Logic] --> TS_SDK[TS SDK]
         Py[Python Agent/Swarm Logic] --> Py_SDK[Python Wrapper/SDK]
     end
 
-    subgraph JuliaOS Backend
+    subgraph "JuliaOS Backend"
         API[Julia API Layer]
         Core[Julia Core Engine]
         Rust[Secure Rust Signer]
     end
 
-    subgraph DEX Integrations
+    subgraph "DEX Integrations"
         Uniswap[UniswapDEX]
         SushiSwap[SushiSwapDEX]
         PancakeSwap[PancakeSwapDEX]
@@ -155,6 +153,7 @@ flowchart TD
         Raydium[RaydiumDEX (Solana, via Python FFI)]
     end
 
+    %% Connections
     TS_SDK --> API
     Py_SDK --> API
     API --> Core
