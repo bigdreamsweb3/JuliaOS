@@ -1,481 +1,136 @@
 """
-MeanReversionImpl.jl - Mean reversion trading strategy implementation
-
-This module provides a mean reversion trading strategy for DeFi trading.
+MeanReversionImpl.jl - Implements mean reversion trading strategies.
 """
 module MeanReversionImpl
 
-export MeanReversionStrategy, execute_strategy, backtest_strategy
+using ..TradingStrategy # To subtype AbstractStrategy
+# using ..PriceFeedBase
+using Statistics, Logging, Dates
 
-using ..TradingStrategy
-using ..DEXBase
-using ..PriceFeeds
-using ..RiskManagement
-using Statistics
-using Dates
+export MeanReversionStrategy, execute_strategy #, backtest_strategy
 
 """
-    MeanReversionStrategy
+    MeanReversionStrategy <: AbstractStrategy
 
-Structure representing a mean reversion trading strategy.
-
-# Fields
-- `base_asset::String`: The base asset (e.g., "ETH")
-- `quote_asset::String`: The quote asset (e.g., "USD")
-- `price_feed::AbstractPriceFeed`: The price feed
-- `dex::AbstractDEX`: The DEX for executing trades
-- `lookback_period::Int`: The lookback period for calculating the mean
-- `entry_threshold::Float64`: The number of standard deviations for entry
-- `exit_threshold::Float64`: The number of standard deviations for exit
-- `trade_amount::Float64`: The amount to trade
-- `stop_loss_pct::Float64`: The stop loss percentage
-- `take_profit_pct::Float64`: The take profit percentage
-- `risk_manager::Union{RiskManager, Nothing}`: The risk manager (optional)
+A strategy that trades based on the assumption that asset prices revert to their mean.
+It typically uses Bollinger Bands or similar statistical measures.
 """
 struct MeanReversionStrategy <: AbstractStrategy
-    base_asset::String
-    quote_asset::String
-    price_feed::AbstractPriceFeed
-    dex::AbstractDEX
-    lookback_period::Int
-    entry_threshold::Float64
-    exit_threshold::Float64
-    trade_amount::Float64
-    stop_loss_pct::Float64
-    take_profit_pct::Float64
-    risk_manager::Union{RiskManager, Nothing}
-    
+    name::String
+    asset_pair::String # e.g., "ETH/USD"
+    lookback_period::Int # For calculating mean and standard deviation
+    std_dev_multiplier::Float64 # Number of std deviations for bands
+    # price_data_source::AbstractPriceFeed
+    # execution_context::AbstractDEX
+
     function MeanReversionStrategy(
-        base_asset::String,
-        quote_asset::String,
-        price_feed::AbstractPriceFeed,
-        dex::AbstractDEX;
-        lookback_period::Int = 20,
-        entry_threshold::Float64 = 2.0,
-        exit_threshold::Float64 = 0.5,
-        trade_amount::Float64 = 1.0,
-        stop_loss_pct::Float64 = 0.05,
-        take_profit_pct::Float64 = 0.1,
-        risk_manager::Union{RiskManager, Nothing} = nothing
+        name::String,
+        asset_pair::String;
+        lookback_period::Int=20,
+        std_dev_multiplier::Float64=2.0
+        # price_data_source, execution_context
     )
-        # Validate parameters
-        lookback_period > 0 || throw(ArgumentError("lookback_period must be positive"))
-        entry_threshold > 0.0 || throw(ArgumentError("entry_threshold must be positive"))
-        exit_threshold > 0.0 || throw(ArgumentError("exit_threshold must be positive"))
-        trade_amount > 0.0 || throw(ArgumentError("trade_amount must be positive"))
-        stop_loss_pct > 0.0 || throw(ArgumentError("stop_loss_pct must be positive"))
-        take_profit_pct > 0.0 || throw(ArgumentError("take_profit_pct must be positive"))
-        
-        new(
-            base_asset,
-            quote_asset,
-            price_feed,
-            dex,
-            lookback_period,
-            entry_threshold,
-            exit_threshold,
-            trade_amount,
-            stop_loss_pct,
-            take_profit_pct,
-            risk_manager
-        )
+        if lookback_period <= 1
+            error("Lookback period must be greater than 1.")
+        end
+        if std_dev_multiplier <= 0
+            error("Standard deviation multiplier must be positive.")
+        end
+        new(name, asset_pair, lookback_period, std_dev_multiplier) #, price_data_source, execution_context)
     end
 end
 
 """
-    calculate_zscore(prices::Vector{Float64}, lookback_period::Int)
-
-Calculate the z-score for the current price.
-
-# Arguments
-- `prices::Vector{Float64}`: The price history
-- `lookback_period::Int`: The lookback period
-
-# Returns
-- `Float64`: The z-score
+    _calculate_bollinger_bands(prices::Vector{Float64}, window::Int, std_dev_mult::Float64)
+Helper to calculate Bollinger Bands: (Middle Band, Upper Band, Lower Band).
+Returns NaNs for initial part where window is not full.
 """
-function calculate_zscore(prices::Vector{Float64}, lookback_period::Int)
-    # Ensure we have enough data
-    if length(prices) < lookback_period + 1
-        return 0.0
+function _calculate_bollinger_bands(prices::Vector{Float64}, window::Int, std_dev_mult::Float64)
+    if length(prices) < window
+        return (fill(NaN, length(prices)), fill(NaN, length(prices)), fill(NaN, length(prices)))
     end
     
-    # Get the lookback window
-    lookback_prices = prices[end-lookback_period:end-1]
-    
-    # Calculate mean and standard deviation
-    μ = mean(lookback_prices)
-    σ = std(lookback_prices)
-    
-    # Handle zero standard deviation
-    if σ == 0.0
-        return 0.0
+    middle_band = Vector{Float64}(undef, length(prices))
+    upper_band = Vector{Float64}(undef, length(prices))
+    lower_band = Vector{Float64}(undef, length(prices))
+
+    middle_band[1:window-1] .= NaN
+    upper_band[1:window-1] .= NaN
+    lower_band[1:window-1] .= NaN
+
+    for i in window:length(prices)
+        window_prices = prices[i-window+1:i]
+        sma = mean(window_prices)
+        std_dev = std(window_prices, corrected=false) # Population standard deviation for consistency
+        
+        middle_band[i] = sma
+        upper_band[i] = sma + (std_dev_mult * std_dev)
+        lower_band[i] = sma - (std_dev_mult * std_dev)
     end
-    
-    # Calculate z-score
-    current_price = prices[end]
-    z_score = (current_price - μ) / σ
-    
-    return z_score
+    return middle_band, upper_band, lower_band
 end
 
+
 """
-    get_trading_pair(strategy::MeanReversionStrategy)
+    execute_strategy(strategy::MeanReversionStrategy, historical_prices::Vector{Float64})
 
-Get the trading pair for the strategy.
-
-# Arguments
-- `strategy::MeanReversionStrategy`: The strategy
-
-# Returns
-- `String`: The trading pair
+Executes the mean reversion strategy based on provided historical prices.
+Returns a trading signal ("BUY", "SELL", "HOLD_LONG", "HOLD_SHORT", "EXIT") and details.
 """
-function get_trading_pair(strategy::MeanReversionStrategy)
-    # Get all trading pairs from the DEX
-    pairs = DEXBase.get_trading_pairs(strategy.dex)
-    
-    # Find the pair that matches the base and quote assets
-    for pair in pairs
-        parts = split(pair, "/")
-        if length(parts) == 2
-            base_asset = parts[1]
-            quote_asset = parts[2]
-            if uppercase(base_asset) == uppercase(strategy.base_asset) && uppercase(quote_asset) == uppercase(strategy.quote_asset)
-                return pair
-            end
-        end
+function TradingStrategy.execute_strategy(strategy::MeanReversionStrategy, historical_prices::Vector{Float64})
+    @info "Executing MeanReversionStrategy: $(strategy.name) for $(strategy.asset_pair)"
+
+    if length(historical_prices) < strategy.lookback_period
+        @warn "Not enough historical price data (got $(length(historical_prices)), need $(strategy.lookback_period)) for MeanReversionStrategy."
+        return Dict("signal"=>"HOLD", "reason"=>"Insufficient data", "details"=>nothing)
+    end
+
+    middle_band, upper_band, lower_band = _calculate_bollinger_bands(historical_prices, strategy.lookback_period, strategy.std_dev_multiplier)
+
+    last_valid_idx = findlast(!isnan, middle_band)
+    if isnothing(last_valid_idx)
+        @warn "Could not compute valid Bollinger Bands for signal generation."
+        return Dict("signal"=>"HOLD", "reason"=>"Band computation failed", "details"=>nothing)
+    end
+
+    current_price = historical_prices[last_valid_idx]
+    current_middle = middle_band[last_valid_idx]
+    current_upper = upper_band[last_valid_idx]
+    current_lower = lower_band[last_valid_idx]
+
+    signal = "HOLD" # Default, or could be HOLD_LONG/HOLD_SHORT if a position is open
+    reason = "Price within bands."
+
+    # Entry signals
+    if current_price <= current_lower
+        signal = "BUY" # Price touched or crossed below lower band - potential buy (revert to mean)
+        reason = "Price ($(round(current_price, digits=2))) at or below Lower Band ($(round(current_lower, digits=2)))."
+    elseif current_price >= current_upper
+        signal = "SELL" # Price touched or crossed above upper band - potential sell (revert to mean)
+        reason = "Price ($(round(current_price, digits=2))) at or above Upper Band ($(round(current_upper, digits=2)))."
+    # Exit signal (example: price reverts to the mean)
+    # This part needs state tracking (if a position is open)
+    # For a stateless signal generator, we might just indicate "near mean"
+    elseif abs(current_price - current_middle) < (0.1 * (current_upper - current_lower)) # Example: price is very close to mean
+        signal = "NEAR_MEAN" # Could be an exit signal if in a position
+        reason = "Price ($(round(current_price, digits=2))) near Middle Band ($(round(current_middle, digits=2)))."
     end
     
-    error("No trading pair found for $(strategy.base_asset)/$(strategy.quote_asset)")
-end
-
-"""
-    execute_strategy(strategy::MeanReversionStrategy)
-
-Execute the mean reversion strategy.
-
-# Arguments
-- `strategy::MeanReversionStrategy`: The strategy
-
-# Returns
-- `Dict{String, Any}`: The result of the strategy execution
-"""
-function TradingStrategy.execute_strategy(strategy::MeanReversionStrategy)
-    # Get historical prices
-    price_data = PriceFeeds.get_historical_prices(
-        strategy.price_feed,
-        strategy.base_asset,
-        strategy.quote_asset;
-        interval = "1d",
-        limit = strategy.lookback_period + 10  # Get enough data for the z-score calculation
-    )
-    
-    # Extract prices
-    prices = [point.price for point in price_data.points]
-    
-    # Calculate z-score
-    z_score = calculate_zscore(prices, strategy.lookback_period)
-    
-    # Get the current price
-    current_price = PriceFeeds.get_latest_price(
-        strategy.price_feed,
-        strategy.base_asset,
-        strategy.quote_asset
-    ).price
-    
-    # Get the trading pair
-    pair = get_trading_pair(strategy)
-    
-    # Determine the action based on the z-score
-    action = "HOLD"
-    order = nothing
-    stop_loss = nothing
-    take_profit = nothing
-    
-    if z_score <= -strategy.entry_threshold
-        # Price is significantly below the mean, buy signal
-        action = "BUY"
-        
-        # Calculate position size if risk manager is provided
-        position_size = strategy.trade_amount
-        if strategy.risk_manager !== nothing
-            # Calculate stop loss price
-            stop_loss_price = current_price * (1.0 - strategy.stop_loss_pct)
-            
-            # Calculate position size based on risk
-            position_size = RiskManagement.calculate_position_size(
-                strategy.risk_manager.position_sizer,
-                current_price,
-                stop_loss_price
-            )
-            
-            # Check risk limits
-            allowed, message = RiskManagement.check_risk_limits(
-                strategy.risk_manager,
-                position_size,
-                current_price
-            )
-            
-            if !allowed
-                @warn "Risk limits exceeded: $message"
-                action = "HOLD"
-            end
-        end
-        
-        if action == "BUY"
-            # Create a buy order
-            order = DEXBase.create_order(
-                strategy.dex,
-                pair,
-                "BUY",
-                position_size,
-                current_price
-            )
-            
-            # Set stop loss and take profit
-            stop_loss = current_price * (1.0 - strategy.stop_loss_pct)
-            take_profit = current_price * (1.0 + strategy.take_profit_pct)
-        end
-    elseif z_score >= strategy.entry_threshold
-        # Price is significantly above the mean, sell signal
-        action = "SELL"
-        
-        # Calculate position size if risk manager is provided
-        position_size = strategy.trade_amount
-        if strategy.risk_manager !== nothing
-            # Calculate stop loss price
-            stop_loss_price = current_price * (1.0 + strategy.stop_loss_pct)
-            
-            # Calculate position size based on risk
-            position_size = RiskManagement.calculate_position_size(
-                strategy.risk_manager.position_sizer,
-                current_price,
-                stop_loss_price
-            )
-            
-            # Check risk limits
-            allowed, message = RiskManagement.check_risk_limits(
-                strategy.risk_manager,
-                position_size,
-                current_price
-            )
-            
-            if !allowed
-                @warn "Risk limits exceeded: $message"
-                action = "HOLD"
-            end
-        end
-        
-        if action == "SELL"
-            # Create a sell order
-            order = DEXBase.create_order(
-                strategy.dex,
-                pair,
-                "SELL",
-                position_size,
-                current_price
-            )
-            
-            # Set stop loss and take profit
-            stop_loss = current_price * (1.0 + strategy.stop_loss_pct)
-            take_profit = current_price * (1.0 - strategy.take_profit_pct)
-        end
-    elseif abs(z_score) <= strategy.exit_threshold
-        # Price is close to the mean, exit signal
-        action = "EXIT"
-        
-        # Create an exit order (depends on current position)
-        # In a real implementation, we would check the current position
-        # For now, we'll just create a placeholder order
-        order = DEXBase.create_order(
-            strategy.dex,
-            pair,
-            "SELL",  # Assuming we're in a long position
-            strategy.trade_amount,
-            current_price
-        )
-    end
-    
-    # Return the result
-    return Dict{String, Any}(
-        "action" => action,
+    details = Dict(
+        "asset_pair" => strategy.asset_pair,
         "current_price" => current_price,
-        "z_score" => z_score,
-        "mean" => mean(prices[end-strategy.lookback_period:end-1]),
-        "std_dev" => std(prices[end-strategy.lookback_period:end-1]),
-        "order" => order,
-        "stop_loss" => stop_loss,
-        "take_profit" => take_profit
+        "lookback_period" => strategy.lookback_period,
+        "std_dev_multiplier" => strategy.std_dev_multiplier,
+        "lower_band" => round(current_lower, digits=4),
+        "middle_band" => round(current_middle, digits=4),
+        "upper_band" => round(current_upper, digits=4),
+        "timestamp" => string(now(UTC))
     )
+    
+    @info "Signal for $(strategy.asset_pair): $signal. Reason: $reason"
+    return Dict("signal"=>signal, "reason"=>reason, "details"=>details)
 end
 
-"""
-    backtest_strategy(strategy::MeanReversionStrategy, start_date::DateTime, end_date::DateTime)
+# TODO: Implement backtest_strategy for MeanReversionStrategy
 
-Backtest the mean reversion strategy.
-
-# Arguments
-- `strategy::MeanReversionStrategy`: The strategy
-- `start_date::DateTime`: The start date
-- `end_date::DateTime`: The end date
-
-# Returns
-- `Dict{String, Any}`: The backtest results
-"""
-function backtest_strategy(strategy::MeanReversionStrategy, start_date::DateTime, end_date::DateTime)
-    # Get historical prices
-    price_data = PriceFeeds.get_historical_prices(
-        strategy.price_feed,
-        strategy.base_asset,
-        strategy.quote_asset;
-        interval = "1d",
-        start_time = start_date,
-        end_time = end_date
-    )
-    
-    # Extract prices and timestamps
-    prices = [point.price for point in price_data.points]
-    timestamps = [point.timestamp for point in price_data.points]
-    
-    # Ensure we have enough data
-    if length(prices) < strategy.lookback_period + 1
-        error("Not enough data for backtesting")
-    end
-    
-    # Initialize backtest variables
-    initial_equity = 10000.0  # $10,000 initial equity
-    equity = initial_equity
-    position = 0.0
-    entry_price = 0.0
-    trades = []
-    
-    # Loop through the prices
-    for i in (strategy.lookback_period + 1):length(prices)
-        # Get the current price and timestamp
-        current_price = prices[i]
-        current_timestamp = timestamps[i]
-        
-        # Calculate z-score
-        lookback_prices = prices[i-strategy.lookback_period:i-1]
-        μ = mean(lookback_prices)
-        σ = std(lookback_prices)
-        
-        # Handle zero standard deviation
-        if σ == 0.0
-            continue
-        end
-        
-        z_score = (current_price - μ) / σ
-        
-        # Determine the action based on the z-score
-        if position == 0.0
-            # No position, check for entry signals
-            if z_score <= -strategy.entry_threshold
-                # Buy signal
-                position = strategy.trade_amount / current_price
-                entry_price = current_price
-                
-                # Record the trade
-                push!(trades, Dict{String, Any}(
-                    "type" => "BUY",
-                    "timestamp" => current_timestamp,
-                    "price" => current_price,
-                    "amount" => position,
-                    "value" => position * current_price
-                ))
-            elseif z_score >= strategy.entry_threshold
-                # Sell signal (short)
-                position = -strategy.trade_amount / current_price
-                entry_price = current_price
-                
-                # Record the trade
-                push!(trades, Dict{String, Any}(
-                    "type" => "SELL",
-                    "timestamp" => current_timestamp,
-                    "price" => current_price,
-                    "amount" => abs(position),
-                    "value" => abs(position) * current_price
-                ))
-            end
-        else
-            # Have a position, check for exit signals
-            if (position > 0.0 && z_score >= strategy.exit_threshold) ||
-               (position < 0.0 && z_score <= -strategy.exit_threshold)
-                # Exit signal
-                profit = position * (current_price - entry_price)
-                equity += profit
-                
-                # Record the trade
-                push!(trades, Dict{String, Any}(
-                    "type" => position > 0.0 ? "SELL" : "BUY",
-                    "timestamp" => current_timestamp,
-                    "price" => current_price,
-                    "amount" => abs(position),
-                    "value" => abs(position) * current_price,
-                    "profit" => profit
-                ))
-                
-                # Reset position
-                position = 0.0
-                entry_price = 0.0
-            end
-        end
-    end
-    
-    # Close any open position at the end
-    if position != 0.0
-        current_price = prices[end]
-        profit = position * (current_price - entry_price)
-        equity += profit
-        
-        # Record the trade
-        push!(trades, Dict{String, Any}(
-            "type" => position > 0.0 ? "SELL" : "BUY",
-            "timestamp" => timestamps[end],
-            "price" => current_price,
-            "amount" => abs(position),
-            "value" => abs(position) * current_price,
-            "profit" => profit
-        ))
-    end
-    
-    # Calculate performance metrics
-    total_return = (equity - initial_equity) / initial_equity * 100.0
-    
-    # Calculate drawdown
-    max_equity = initial_equity
-    max_drawdown = 0.0
-    current_equity = initial_equity
-    
-    for trade in trades
-        if haskey(trade, "profit")
-            current_equity += trade["profit"]
-            max_equity = max(max_equity, current_equity)
-            drawdown = (max_equity - current_equity) / max_equity * 100.0
-            max_drawdown = max(max_drawdown, drawdown)
-        end
-    end
-    
-    # Calculate win rate
-    winning_trades = 0
-    for trade in trades
-        if haskey(trade, "profit") && trade["profit"] > 0.0
-            winning_trades += 1
-        end
-    end
-    
-    win_rate = length(trades) > 0 ? winning_trades / length(trades) * 100.0 : 0.0
-    
-    # Return the backtest results
-    return Dict{String, Any}(
-        "initial_equity" => initial_equity,
-        "final_equity" => equity,
-        "total_return" => total_return,
-        "max_drawdown" => max_drawdown,
-        "total_trades" => length(trades),
-        "win_rate" => win_rate,
-        "trades" => trades
-    )
-end
-
-end # module
+end # module MeanReversionImpl

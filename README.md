@@ -1,6 +1,5 @@
 # JuliaOS Open Source AI Agent & Swarm Framework
 
-
 *joo-LEE-uh-oh-ESS* /ˈdʒuː.li.ə.oʊ.ɛs/
 
 **Noun**
@@ -37,327 +36,137 @@ JuliaOS is a comprehensive framework for building decentralized applications (DA
 - 🚩 [Use Cases](https://juliaos.gitbook.io/juliaos-documentation-hub/features/use-cases): All use cases and examples
 - 🔵 [API](https://juliaos.gitbook.io/juliaos-documentation-hub/api-documentation/api-reference): Julia backend API reference
 
-
-
 ## Quick Start
 
 ### Prerequisites
 
-#### Option 1: Using Docker (Recommended)
+- **Node.js**: Ensure you have Node.js installed. You can download it from [nodejs.org](https://nodejs.org/).
+- **Julia**: Ensure you have Julia installed. You can download it from [julialang.org](https://julialang.org/).
+- **Python**: Ensure you have Python installed. You can download it from [python.org](https://www.python.org/).
 
-The easiest way to get started with JuliaOS is using Docker, which eliminates the need to install dependencies separately:
+### Creating Agents and Swarms (TypeScript & Python)
 
-- [Docker](https://www.docker.com/products/docker-desktop/) (v20.10 or later recommended)
-- [Docker Compose](https://docs.docker.com/compose/install/) (v2.0 or later, included with Docker Desktop)
+#### TypeScript (TS) Agents & Swarms
 
-#### Option 2: Manual Installation
+1. **Install dependencies and build the project:**
+   ```bash
+   npm install
+   npm run build
+   ```
 
-If you prefer to install dependencies manually:
+2. **Create a new agent or swarm using the provided templates:**
+   - Copy and customize the template in `packages/modules/julia_templates/custom_agent_template.jl` for Julia-based agents.
+   - For TypeScript agents, use the templates in `packages/templates/agents/` (e.g., `custom_agent_template.jl`, `src/AgentsService.ts`).
 
-- [Node.js](https://nodejs.org/) (v18 or later recommended)
-- [npm](https://www.npmjs.com/) (v7 or later, comes with Node.js)
-- [Julia](https://julialang.org/downloads/) (v1.10 or later recommended)
-- [Python](https://www.python.org/downloads/) (v3.8 or later, optional for Python wrapper)
+3. **Configure your agent or swarm:**
+   - Edit the configuration files or pass parameters in your TypeScript code.
+   - Use the TypeScript SDK (`packages/core/src/api/ApiClient.ts`) to interact with the Julia backend, create agents, submit objectives, and manage swarms.
 
-Make sure `node`, `julia`, and `python` commands are available in your system's PATH.
+4. **Run your agent or swarm:**
+   - Use the CLI or your own script to start the agent.
+   - Example (TypeScript):
+     ```typescript
+     import { ApiClient } from '@juliaos/core';
+     const client = new ApiClient();
+     // Create and run agent logic here
+     ```
 
-### Installation and Setup
+#### Python Agents & Swarms
 
-#### Option 1: Quick Start with Docker (Recommended)
+1. **Install the Python wrapper:**
+   ```bash
+   pip install -e ./packages/pythonWrapper
+   ```
 
-```bash
-# Clone the repository
-git clone https://github.com/Juliaoscode/JuliaOS.git
-cd JuliaOS
+2. **Create a new agent or swarm using the Python templates:**
+   - Use the templates in `packages/templates/python_templates/` (e.g., `orchestration_template.py`, `llm_integration_examples/`).
 
-# Run JuliaOS using the quick start script
-chmod +x run-juliaos.sh
-./run-juliaos.sh
-```
+3. **Configure and run your agent:**
+   - Import the Python wrapper and use the client to interact with JuliaOS.
+   - Example:
+     ```python
+     from juliaos_wrapper import client
+     api = client.JuliaOSApiClient()
+     # Create and run agent logic here
+     ```
 
-That's it! This will build and start JuliaOS in Docker containers. The CLI will automatically connect to the Julia server.
-
-#### Option 2: Manual Installation
-
-1.  **Clone the Repository:**
-    ```bash
-    git clone https://github.com/Juliaoscode/JuliaOS.git
-    cd JuliaOS
-    ```
-
-2.  **Install Node.js Dependencies:**
-    This installs dependencies for the CLI, framework packages, bridge, etc.
-    ```bash
-    npm install
-    ```
-    *Troubleshooting: If you encounter errors, ensure you have Node.js v18+ and npm v7+. Deleting `node_modules` and `package-lock.json` before running `npm install` might help.*
-
-3.  **Install Julia Dependencies:**
-    This installs the necessary Julia packages for the backend server.
-    ```bash
-    # Navigate to the julia directory
-    cd julia
-
-    # Activate the Julia environment and install packages
-    # This might take some time on the first run as it downloads and precompiles packages
-    julia -e 'using Pkg; Pkg.activate("."); Pkg.update(); Pkg.instantiate()'
-
-    # Navigate back to the root directory
-    cd ..
-    ```
-    *Troubleshooting: Ensure Julia is installed and in your PATH. If `Pkg.instantiate()` fails, check your internet connection and Julia version compatibility (1.10+). Sometimes running `julia -e 'using Pkg; Pkg.update()'` inside the `julia` directory before `instantiate` can resolve issues.*
-
-4.  **Install Python Dependencies (Optional):**
-    If you want to use the Python wrapper, install the necessary Python packages.
-    ```bash
-    # Option 1: Install directly from GitHub (recommended)
-    pip install git+https://github.com/Juliaoscode/JuliaOS.git#subdirectory=packages/python-wrapper
-
-    # Option 2: Install with LLM support
-    pip install "git+https://github.com/Juliaoscode/JuliaOS.git@23-04-max-fix#egg=juliaos[llm]&subdirectory=packages/python-wrapper"
-
-    # Option 3: Install with Google ADK support
-    pip install "git+https://github.com/Juliaoscode/JuliaOS.git@23-04-max-fix#egg=juliaos[adk]&subdirectory=packages/python-wrapper"
-
-    # Option 4: For development (after cloning the repository)
-    cd packages/python-wrapper
-    pip install -e .
-    cd ../..
-    ```
-    *Note: The `juliaos` package is NOT available on PyPI. You must install it using one of the methods above.*
-
-
-    *Troubleshooting Direct GitHub Install (Options 1-3):*
-    - Ensure Python 3.8+ and `pip` are installed and in your PATH.
-    - Ensure `git` is installed and in your PATH.
-    - **Verify the URL format is exactly as shown.** Do not use URLs containing `/tree/`.
-    - Use quotes around the URL if your shell requires it (especially for URLs with `[...]` extras).
-    - Check your network connection and ensure you can clone the GitHub repository manually.
-    - If issues persist, use the **Development Install (Option 4)** below, which is generally more reliable.
-
-    *Troubleshooting Development Install (Option 4):*
-    - Ensure you have cloned the `JuliaOS` repository first.
-    - Ensure you are running the `pip install -e .` command from within the `packages/python-wrapper` directory.
-    - Using a Python virtual environment (`venv` or `conda`) is highly recommended.
-
-5.  **Set Up Environment Variables:**
-    Copy the example environment file and add your API keys/RPC URLs for full functionality.
-    ```bash
-    # Copy the root .env.example (contains keys for Julia backend, Python wrapper tests etc.)
-    cp .env.example .env
-    nano .env # Add your keys (OpenAI, RPC URLs etc.)
-
-    # Alternatively, copy the example config file for Julia
-    cp julia/config.example.toml julia/config.toml
-    nano julia/config.toml # Edit with your configuration
-    ```
-
-    *Required keys for full functionality:*
-    - `OPENAI_API_KEY`: For OpenAI integration
-    - `ETHEREUM_RPC_URL`: For Ethereum blockchain interaction (get from [Infura](https://infura.io), [Alchemy](https://www.alchemy.com), or other providers)
-    - `POLYGON_RPC_URL`: For Polygon blockchain interaction (get from [Infura](https://infura.io), [Alchemy](https://www.alchemy.com), or other providers)
-    - `SOLANA_RPC_URL`: For Solana blockchain interaction (get from [QuickNode](https://www.quicknode.com), [Alchemy](https://www.alchemy.com), or use public endpoints with limitations)
-    - `ARBITRUM_RPC_URL`: For Arbitrum blockchain interaction
-    - `OPTIMISM_RPC_URL`: For Optimism blockchain interaction
-    - `AVALANCHE_RPC_URL`: For Avalanche blockchain interaction
-    - `BSC_RPC_URL`: For Binance Smart Chain interaction
-    - `BASE_RPC_URL`: For Base blockchain interaction
-    - `ARWEAVE_WALLET_FILE`: Path to your Arweave wallet file (for decentralized storage)
-    - `ANTHROPIC_API_KEY`: For Claude integration
-    - `COHERE_API_KEY`: For Cohere integration
-    - `MISTRAL_API_KEY`: For Mistral integration
-    - `GOOGLE_API_KEY`: For Gemini integration
-
-    Without these keys, certain functionalities will use mock implementations or have limited capabilities.
-
-    **RPC URL Providers:**
-    - **Ethereum/EVM Chains**: [Infura](https://infura.io), [Alchemy](https://www.alchemy.com), [QuickNode](https://www.quicknode.com), [Ankr](https://www.ankr.com)
-    - **Solana**: [QuickNode](https://www.quicknode.com), [Alchemy](https://www.alchemy.com), [Helius](https://helius.xyz)
-
-    Most providers offer free tiers that are sufficient for development and testing.
-
-    6. (if not using Docker) Build the project. Run:
-    ```bash
-    npm run build
-    ```
-
-## Local machine deployment and running guide
-
-** Use Git Bash or other Unix-like terminal for Windows users.**
-
-
-**1. Clone the Repository:**
-
-```bash
-git clone --single-branch --branch 23-04-max-fix https://github.com/Juliaoscode/JuliaOS.git
-cd JuliaOS
-```
-
-**2. Install Node.js Dependencies: This installs dependencies for the CLI, framework packages, bridge, etc.**
-
-```bash
-npm install --force
-```
-
-**3. Install Julia Dependencies: This installs the necessary Julia packages for the backend server.**
-
-```bash
-# Navigate to the julia directory
-cd julia
-
-# Activate the Julia environment and install packages
-# This might take some time on the first run as it downloads and precompiles packages
-julia -e 'using Pkg; Pkg.activate("."); Pkg.update(); Pkg.instantiate()'
-
-# Navigate back to the root directory
-cd ..
-```
-
-_Troubleshooting: Ensure Julia is installed and in your PATH. If Pkg.instantiate() fails, check your internet connection and Julia version compatibility (1.10+). Sometimes running julia -e 'using Pkg; Pkg.update()' inside the julia directory before instantiate can resolve issues._
-
-
-**4. Install Python Dependencies (Optional): If you want to use the Python wrapper, install the necessary Python packages.**
-
-```python
-# Option 1: Install directly from GitHub (recommended)
-pip install git+https://github.com/Juliaoscode/JuliaOS.git#subdirectory=packages/python-wrapper
-
-# Option 2: Install with LLM support
-pip install "git+https://github.com/Juliaoscode/JuliaOS.git@23-04-max-fix#egg=juliaos[llm]&subdirectory=packages/python-wrapper"
-
-# Option 3: Install with Google ADK support
-pip install "git+https://github.com/Juliaoscode/JuliaOS.git@23-04-max-fix#egg=juliaos[adk]&subdirectory=packages/python-wrapper"
-```
-
-
-#### Alternative: Start the Julia Server and Run the Interactive CLI in Two Separate Terminals:
-
-** Run build command**
-```bash
-npm run build
-```
-
-**Terminal 1: Start the Julia Server**
-```bash
-# Navigate to the julia directory
-cd julia/server
-
-# Activate the Julia environment and install packages
-# This might take some time on the first run as it downloads and precompiles packages
-julia -e 'using Pkg; Pkg.activate("."); Pkg.instantiate()'
-
-# Run the server script
-julia --project=. julia_server.jl
-```
-*Wait until you see messages indicating the server has started (e.g., "Server started successfully on localhost:8052"). The server will initialize all modules and display their status.*
-
-**Terminal 2: Run the Interactive CLI**
-```bash
-# Ensure you are in the project root directory (JuliaOS)
-# If not, cd back to it
-
-# Run the interactive CLI script
-node scripts/interactive.cjs
-```
-*You should now see the JuliaOS CLI menu with options for Agent Management, Swarm Intelligence, Blockchain Operations, and more.*
-
-
+4. **Submit objectives or manage swarms:**
+   - Use the Python API to submit objectives, create swarms, and monitor results.
 
 ## Architecture Overview
 
+JuliaOS is built as a modular, multi-layered system for cross-chain, agent-based, and swarm intelligence applications. The architecture is designed for extensibility, security, and high performance, supporting both EVM and Solana ecosystems.
+
+**Key Layers:**
+
+- **User Logic & SDKs**
+  - **TypeScript SDK & Logic Layer:**  
+    - Location: `packages/core/`, `packages/templates/agents/`
+    - Users write agent and swarm logic in TypeScript, using the SDK to interact with the Julia backend.
+  - **Python Wrapper/SDK & Logic Layer:**  
+    - Location: `packages/pythonWrapper/`, `packages/templates/python_templates/`
+    - Users write agent and orchestration logic in Python, using the wrapper to interact with JuliaOS.
+
+- **JuliaOS Backend**
+  - **Layer 1: Julia Core Engine (Foundation Layer):**  
+    - Location: `julia/src/`
+    - Implements core backend logic: agent orchestration, swarm algorithms, neural networks, portfolio optimization, blockchain/DEX integration, price feeds, storage, and trading strategies.
+  - **Layer 2: Julia API Layer (Interface Layer, MCP-Enabled):**  
+    - Location: `julia/src/api/`
+    - Exposes all backend functionality via API endpoints (REST/gRPC/MCP), validates and dispatches requests, formats responses, and enforces API-level security.
+  - **Layer 3: Rust Security Component (Specialized Security Layer):**  
+    - Location: `packages/rust_signer/`
+    - Handles all cryptographic operations (private key management, transaction signing, HD wallet derivation) in a secure, memory-safe environment, called via FFI from Julia.
+
+- **DEX Integrations**
+  - Modular DEX support for Uniswap, SushiSwap, PancakeSwap, QuickSwap, TraderJoe (EVM), and Raydium (Solana) via dedicated modules in `julia/src/dex/`.
+  - Each DEX module implements the AbstractDEX interface for price, liquidity, order creation, trade history, and token/pair discovery.
+
+- **Risk Management & Analytics**
+  - Global risk management is enforced via `config/risk_management.toml` and `julia/src/trading/RiskManagement.jl`.
+  - Real-time trade logging and analytics are provided by `julia/src/trading/TradeLogger.jl`, outputting to both console and file.
+
+- **Community & Contribution**
+  - Open-source, community-driven development with clear contribution guidelines and modular extension points for new agents, DEXes, and analytics.
+
+**Architecture Diagram:**
+
 ```mermaid
-%%{init: {'theme': 'default'}}%%
-%% Enhanced System Architecture Diagram with clearer definitions, grouping, and legend
 flowchart TD
-    %% User Interaction Layer
-    subgraph "User Interaction"
-        direction LR
-        U1([End User via CLI])
-        U2([Developer via SDK])
+    subgraph "User Logic & SDKs"
+        TS[TypeScript Agent/Swarm Logic] --> TS_SDK[TS SDK]
+        Py[Python Agent/Swarm Logic] --> Py_SDK[Python Wrapper/SDK]
     end
 
-    %% Client Layer - TypeScript/Node.js
-    subgraph "Client Layer \n(TypeScript / Node.js)"
-        direction TB
-        CLI["Interactive CLI Script\n(scripts/interactive.cjs)\nuses packages/cli"]
-        Framework["Framework Packages\n(packages/framework, core, wallets, etc.)"]
-        PyWrapper["Python Wrapper\n(packages/python-wrapper)"]
-        JSBridge["JS Bridge Client\n(packages/julia-bridge)"]
-
-        CLI -->|"imports"| Framework
-        U2 -->|"calls API"| Framework
-        U2 -->|"calls"| PyWrapper
-        Framework -->|"bridges to"| JSBridge
-        PyWrapper -->|"bridges to"| JSBridge
+    subgraph "JuliaOS Backend"
+        API[Julia API Layer]
+        Core[Julia Core Engine]
+        Rust[Secure Rust Signer]
     end
 
-    %% Communication Layer
-    subgraph "Communication Layer\n(WebSocket / HTTP)"
-        direction TB
-        BridgeComms["WebSocket / HTTP | Port 8052"]
-    end
-
-    %% Server Layer - Julia Backend
-    subgraph "Server Layer \n(Julia Backend)"
-        direction TB
-        JuliaServer["Julia Server\n(julia_server.jl)"]
-        JuliaBridge["Julia Bridge Server\n(src/Bridge.jl)"]
-
-        subgraph "Core Modules (julia/src)"
-            direction TB
-            AS["AgentSystem.jl\n(Core orchestration)"]
-            SwarmAlg["Swarms.jl\n(DE, PSO, GWO, ACO, GA, WOA)"]
-            SwarmMgr["SwarmManager.jl\n(Execution & Scaling)"]
-            Blockchain["Blockchain.jl\n(EVM interactions)"]
-            DEX["DEX.jl\n(Uniswap V3 logic)"]
-            Web3Store["Web3Storage.jl\n(Ceramic, IPFS)"]
-            OpenAIAdapter["OpenAISwarmAdapter.jl\n(OpenAI API)"]
-            SecurityMgr["SecurityManager.jl\n(Auth & Policy)"]
-            UserModules["UserModules.jl\n(Custom logic)"]
-        end
-
-        JuliaServer -->|"receives"| JuliaBridge
-        JuliaBridge -->|"dispatches to"| AS
-        JuliaBridge -->|"dispatches to"| SwarmAlg
-        JuliaBridge -->|"dispatches to"| SwarmMgr
-        JuliaBridge -->|"dispatches to"| Blockchain
-        JuliaBridge -->|"dispatches to"| DEX
-        JuliaBridge -->|"dispatches to"| Web3Store
-        JuliaBridge -->|"dispatches to"| OpenAIAdapter
-        SwarmMgr --> DEX
-        SwarmMgr --> Blockchain
-    end
-
-    %% External Services
-    subgraph "External Services"
-        direction TB
-        RPC["Blockchain RPC Nodes\n(e.g., Infura, Alchemy)"]
-        W3S["Web3.Storage API\n(IPFS Pinning)"]
-        Ceramic["Ceramic Network Node"]
-        OpenAIExt["OpenAI API"]
+    subgraph "DEX Integrations"
+        Uniswap[UniswapDEX]
+        SushiSwap[SushiSwapDEX]
+        PancakeSwap[PancakeSwapDEX]
+        QuickSwap[QuickSwapDEX]
+        TraderJoe[TraderJoeDEX]
+        %% This line is fixed: text enclosed in quotes
+        Raydium["RaydiumDEX (Solana, via Python FFI)"]
     end
 
     %% Connections
-    U1 --> CLI
-    JSBridge -- "sends/receives" --> BridgeComms
-    BridgeComms -- "sends/receives" --> JuliaServer
-    Blockchain -- interacts with --> RPC
-    Web3Store -- interacts with --> W3S
-    Web3Store -- interacts with --> Ceramic
-    OpenAIAdapter -- interacts with --> OpenAIExt
-
-    %% Styling
-    classDef userLayer fill:#cdeaf2,stroke:#333,stroke-width:1px;
-    classDef clientLayer fill:#d4f4fa,stroke:#333,stroke-width:1px;
-    classDef commLayer fill:#fef4c1,stroke:#333,stroke-width:1px;
-    classDef serverLayer fill:#fad4d4,stroke:#333,stroke-width:1px;
-    classDef externalLayer fill:#d4f7d4,stroke:#333,stroke-width:1px;
-    class U1,U2 userLayer;
-    class CLI,Framework,PyWrapper,JSBridge clientLayer;
-    class BridgeComms commLayer;
-    class JuliaServer,JuliaBridge,AS,SwarmAlg,SwarmMgr,Blockchain,DEX,Web3Store,OpenAIAdapter,SecurityMgr,UserModules serverLayer;
-    class RPC,W3S,Ceramic,OpenAIExt externalLayer;
+    TS_SDK --> API
+    Py_SDK --> API
+    API --> Core
+    Core --> Rust
+    Core --> Uniswap
+    Core --> SushiSwap
+    Core --> PancakeSwap
+    Core --> QuickSwap
+    Core --> TraderJoe
+    Core --> Raydium
 ```
+
 ## 🧑‍🤝‍🧑 Community & Contribution
 
 JuliaOS is an open-source project, and we welcome contributions from the community! Whether you're a developer, a researcher, or an enthusiast in decentralized technologies, AI, and blockchain, there are many ways to get involved.
@@ -398,7 +207,7 @@ We appreciate all forms of contributions, including but not limited to:
 
 ### Getting Started with Contributions
 
-1.  **Set Up Your Environment:** Follow the [Quick Start](#quick-start) or [Local machine deployment](#local-machine-deployment-and-running-guide) sections to get JuliaOS running on your system. Ensure you can build the project using `npm run build`.
+1.  **Set Up Your Environment:** Follow the [Quick Start](#quick-start)
 2.  **Find an Issue:** Browse the [GitHub Issues](https://github.com/Juliaoscode/JuliaOS/issues) page. Look for issues tagged with `good first issue` or `help wanted` if you're new.
 3.  **Discuss Your Plans:** For new features or significant changes, it's a good idea to open an issue first to discuss your ideas with the maintainers and community.
 4.  **Contribution Workflow:**
@@ -412,7 +221,7 @@ We appreciate all forms of contributions, including but not limited to:
     * Clearly describe the changes in your PR and link to any relevant issues.
     * Be responsive to feedback and participate in the review process.
 
-### Contribution Guidelines (To Be Established)
+### Contribution Guidelines
 
 We are in the process of formalizing our contribution guidelines. In the meantime, please aim for:
 
@@ -422,12 +231,7 @@ We are in the process of formalizing our contribution guidelines. In the meantim
 
 We plan to create a `CONTRIBUTING.md` file with detailed guidelines soon.
 
-### Code of Conduct (To Be Established)
+### Code of Conduct
 
 We are committed to fostering an open, welcoming, and inclusive community. All contributors and participants are expected to adhere to a Code of Conduct. We plan to adopt and publish a `CODE_OF_CONDUCT.md` file (e.g., based on the Contributor Covenant) in the near future.
 
-### Questions?
-
-If you have questions about contributing or want to discuss ideas, please open an issue or start a discussion on GitHub.
-
-Thank you for your interest in JuliaOS! We look forward to your contributions and building a vibrant community together.

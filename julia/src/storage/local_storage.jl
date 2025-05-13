@@ -1,222 +1,188 @@
+"""
+LocalStorage.jl - Local file system storage provider for JuliaOS.
+
+Uses SQLite for metadata and stores data as JSON strings.
+Supports optional (placeholder) encryption and compression.
+"""
 module LocalStorage
 
-export LocalStorageProvider, initialize, save, load, delete, list
+using SQLite, JSON3, Dates, Logging # JSON3 for consistency
+using ..StorageInterface # From the file created in the same directory
 
-using SQLite
-using JSON
-using Dates
-using ..StorageInterface
+export LocalStorageProvider # Export the concrete provider type
 
 # Define the local storage provider
-struct LocalStorageProvider <: StorageInterface.StorageProvider
+mutable struct LocalStorageProvider <: StorageInterface.StorageProvider
     db_path::String
-    db::Union{SQLite.DB, Nothing}
-    encryption_key::Union{String, Nothing}
-    compression_enabled::Bool
+    db::Union{SQLite.DB, Nothing} # Made mutable to be set by initialize_provider
+    # encryption_key::Union{String, Nothing} # Placeholder, real encryption needs a secure key
+    # compression_enabled::Bool # Placeholder
 
-    # Constructor with default values
+    # Constructor with default values, db will be Nothing until initialized
     function LocalStorageProvider(db_path::String;
-                                 encryption_key::Union{String, Nothing}=nothing,
-                                 compression_enabled::Bool=true)
-        new(db_path, nothing, encryption_key, compression_enabled)
-    end
-
-    # Constructor with database connection
-    function LocalStorageProvider(db_path::String, db::SQLite.DB, encryption_key::Union{String, Nothing}, compression_enabled::Bool)
-        new(db_path, db, encryption_key, compression_enabled)
+                                 # encryption_key::Union{String, Nothing}=nothing,
+                                 # compression_enabled::Bool=true
+                                 )
+        new(db_path, nothing) #, encryption_key, compression_enabled)
     end
 end
 
 """
-    initialize(provider::LocalStorageProvider)
+    initialize_provider(provider::LocalStorageProvider; config::Dict=Dict())
 
-Initialize the local storage provider.
+Initialize the local storage provider. `config` can override `db_path`.
 """
-function initialize(provider::LocalStorageProvider)
+function StorageInterface.initialize_provider(provider::LocalStorageProvider; config::Dict=Dict())
+    # Allow db_path to be overridden by config passed to initialize_provider
+    # This is useful if the main Storage.jl module passes down app-level config.
+    actual_db_path = get(config, "db_path", provider.db_path)
+    # encryption_key = get(config, "encryption_key", provider.encryption_key) # If these were fields
+    # compression = get(config, "compression_enabled", provider.compression_enabled)
+
     try
-        # Create the database directory if it doesn't exist
-        db_dir = dirname(provider.db_path)
+        db_dir = dirname(actual_db_path)
         if !isdir(db_dir)
             mkpath(db_dir)
+            @info "LocalStorage: Created storage directory: $db_dir"
         end
 
-        # Connect to the database
-        db = SQLite.DB(provider.db_path)
+        db_conn = SQLite.DB(actual_db_path)
 
-        # Create the storage table if it doesn't exist
-        SQLite.execute(db, """
-            CREATE TABLE IF NOT EXISTS storage (
+        SQLite.execute(db_conn, """
+            CREATE TABLE IF NOT EXISTS storage_metadata (
                 key TEXT PRIMARY KEY,
-                value TEXT,
+                data_value TEXT, -- Changed from 'value' to 'data_value' to avoid SQL keyword clash
                 metadata TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
         """)
-
-        # Return a new provider with the database connection
-        return LocalStorageProvider(
-            provider.db_path,
-            db,
-            provider.encryption_key,
-            provider.compression_enabled
-        )
+        
+        # Update the provider instance with the live DB connection and actual path
+        provider.db = db_conn
+        # provider.db_path = actual_db_path # If db_path itself should be mutable in provider
+        
+        @info "LocalStorageProvider initialized with DB at: $actual_db_path"
+        return provider # Return the initialized (or modified) provider
     catch e
-        @error "Error initializing local storage: $(string(e))"
+        @error "Error initializing local storage at $actual_db_path" exception=(e, catch_backtrace())
         rethrow(e)
     end
 end
 
 """
     save(provider::LocalStorageProvider, key::String, data::Any; metadata::Dict{String, Any}=Dict{String, Any}())
-
-Save data to local storage.
 """
 function StorageInterface.save(provider::LocalStorageProvider, key::String, data::Any; metadata::Dict{String, Any}=Dict{String, Any}())
     if isnothing(provider.db)
-        error("Local storage not initialized")
+        error("LocalStorageProvider not initialized. Call initialize_provider first.")
     end
 
     try
-        # Convert data to JSON string
-        data_json = JSON.json(data)
-        metadata_json = JSON.json(metadata)
+        data_json = JSON3.write(data) # Use JSON3
+        metadata_json = JSON3.write(metadata)
 
-        # Apply encryption if enabled
-        if !isnothing(provider.encryption_key)
-            # In a real implementation, we would encrypt the data here
-            # For now, we'll just add a note that it would be encrypted
-            data_json = "ENCRYPTED:" * data_json
-        end
+        # TODO: Implement real encryption if provider.encryption_key is set
+        # TODO: Implement real compression if provider.compression_enabled is true
 
-        # Apply compression if enabled
-        if provider.compression_enabled
-            # In a real implementation, we would compress the data here
-            # For now, we'll just add a note that it would be compressed
-            data_json = "COMPRESSED:" * data_json
-        end
+        timestamp = string(now(Dates.UTC)) # Use UTC for consistency
 
-        # Get current timestamp
-        timestamp = string(now())
-
-        # Check if the key already exists
-        result = SQLite.execute(provider.db, "SELECT key FROM storage WHERE key = ?", [key])
-
-        if isempty(result)
-            # Insert new record
-            SQLite.execute(provider.db, """
-                INSERT INTO storage (key, value, metadata, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, [key, data_json, metadata_json, timestamp, timestamp])
-        else
-            # Update existing record
-            SQLite.execute(provider.db, """
-                UPDATE storage
-                SET value = ?, metadata = ?, updated_at = ?
-                WHERE key = ?
-            """, [data_json, metadata_json, timestamp, key])
-        end
-
+        # Upsert logic: Insert or Replace
+        SQLite.execute(provider.db, """
+            INSERT INTO storage_metadata (key, data_value, metadata, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                data_value = excluded.data_value,
+                metadata = excluded.metadata,
+                updated_at = excluded.updated_at;
+        """, [key, data_json, metadata_json, timestamp, timestamp])
+        
         return true
     catch e
-        @error "Error saving data to local storage: $(string(e))"
-        rethrow(e)
+        @error "Error saving data to local storage for key '$key'" exception=(e, catch_backtrace())
+        return false # Or rethrow(e) depending on desired error handling
     end
 end
 
 """
-    load(provider::LocalStorageProvider, key::String)
-
-Load data from local storage.
+    load(provider::LocalStorageProvider, key::String)::Union{Nothing, Tuple{Any, Dict{String, Any}}}
 """
-function StorageInterface.load(provider::LocalStorageProvider, key::String)
+function StorageInterface.load(provider::LocalStorageProvider, key::String)::Union{Nothing, Tuple{Any, Dict{String, Any}}}
     if isnothing(provider.db)
-        error("Local storage not initialized")
+        error("LocalStorageProvider not initialized.")
     end
 
     try
-        # Query the database
-        result = SQLite.execute(provider.db, "SELECT value, metadata FROM storage WHERE key = ?", [key])
-
-        if isempty(result)
-            return nothing
+        stmt = SQLite.Stmt(provider.db, "SELECT data_value, metadata FROM storage_metadata WHERE key = ?")
+        results = DBInterface.execute(stmt, [key])
+        
+        row = nothing
+        for r in results # Iterate to get the first (and only expected) row
+            row = r
+            break
         end
 
-        # Get the data and metadata
-        data_json = result[1, :value]
-        metadata_json = result[1, :metadata]
-
-        # Remove compression if applied
-        if provider.compression_enabled && startswith(data_json, "COMPRESSED:")
-            data_json = data_json[12:end]
+        if isnothing(row)
+            return nothing # Key not found
         end
 
-        # Remove encryption if applied
-        if !isnothing(provider.encryption_key) && startswith(data_json, "ENCRYPTED:")
-            data_json = data_json[11:end]
-        end
+        data_json = row.data_value
+        metadata_json = row.metadata
 
-        # Parse the JSON data
-        data = JSON.parse(data_json)
-        metadata = JSON.parse(metadata_json)
+        # TODO: Implement real decompression if provider.compression_enabled
+        # TODO: Implement real decryption if provider.encryption_key
 
-        return Dict(
-            "data" => data,
-            "metadata" => metadata
-        )
+        # Use JSON3.read for parsing
+        parsed_data = JSON3.read(data_json) 
+        parsed_metadata = JSON3.read(metadata_json, Dict{String,Any}) # Ensure metadata is Dict
+
+        return (parsed_data, parsed_metadata)
     catch e
-        @error "Error loading data from local storage: $(string(e))"
-        rethrow(e)
+        @error "Error loading data from local storage for key '$key'" exception=(e, catch_backtrace())
+        return nothing # Or rethrow(e)
     end
 end
 
 """
-    delete(provider::LocalStorageProvider, key::String)
-
-Delete data from local storage.
+    delete_key(provider::LocalStorageProvider, key::String)::Bool
 """
-function StorageInterface.delete(provider::LocalStorageProvider, key::String)
+function StorageInterface.delete_key(provider::LocalStorageProvider, key::String)::Bool
     if isnothing(provider.db)
-        error("Local storage not initialized")
+        error("LocalStorageProvider not initialized.")
     end
-
     try
-        # Delete the record
-        SQLite.execute(provider.db, "DELETE FROM storage WHERE key = ?", [key])
-
-        return true
+        SQLite.execute(provider.db, "DELETE FROM storage_metadata WHERE key = ?", [key])
+        # SQLite.changes(provider.db) can tell you if a row was actually deleted.
+        return true # Assume success even if key didn't exist, as per typical delete semantics
     catch e
-        @error "Error deleting data from local storage: $(string(e))"
-        rethrow(e)
+        @error "Error deleting data from local storage for key '$key'" exception=(e, catch_backtrace())
+        return false
     end
 end
 
 """
-    list(provider::LocalStorageProvider, prefix::String="")
-
-List keys in local storage.
+    list_keys(provider::LocalStorageProvider, prefix::String="")::Vector{String}
 """
-function StorageInterface.list(provider::LocalStorageProvider, prefix::String="")
+function StorageInterface.list_keys(provider::LocalStorageProvider, prefix::String="")::Vector{String}
     if isnothing(provider.db)
-        error("Local storage not initialized")
+        error("LocalStorageProvider not initialized.")
     end
-
     try
-        # Query the database
-        if isempty(prefix)
-            result = SQLite.execute(provider.db, "SELECT key FROM storage")
-        else
-            result = SQLite.execute(provider.db, "SELECT key FROM storage WHERE key LIKE ?", [prefix * "%"])
+        query = "SELECT key FROM storage_metadata"
+        params = []
+        if !isempty(prefix)
+            query *= " WHERE key LIKE ?"
+            push!(params, prefix * "%")
         end
-
-        # Extract the keys
-        keys = [result[i, :key] for i in 1:size(result, 1)]
-
-        return keys
+        
+        results = SQLite.DBInterface.execute(provider.db, query, params)
+        return [String(row.key) for row in results]
     catch e
-        @error "Error listing keys from local storage: $(string(e))"
-        rethrow(e)
+        @error "Error listing keys from local storage with prefix '$prefix'" exception=(e, catch_backtrace())
+        return String[]
     end
 end
+
+# exists is inherited from StorageInterface (default uses load)
 
 end # module LocalStorage

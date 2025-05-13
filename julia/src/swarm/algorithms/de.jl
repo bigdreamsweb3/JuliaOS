@@ -1,246 +1,206 @@
-module DE
-
-export DifferentialEvolution, optimize
-
-using Random
-using Statistics
-using ..SwarmBase
-
 """
-    DifferentialEvolution <: AbstractSwarmAlgorithm
-
-Differential Evolution optimizer.
-
-# Fields
-- `population_size::Int`: Size of the population
-- `max_iterations::Int`: Maximum number of iterations
-- `F::Float64`: Differential weight
-- `CR::Float64`: Crossover probability
-- `strategy::Symbol`: Mutation strategy
+DE.jl - Placeholder for Differential Evolution Algorithm
 """
-struct DifferentialEvolution <: AbstractSwarmAlgorithm
+module DEAlgorithmImpl
+
+using Logging
+try
+    using ..SwarmBase
+catch e
+    @warn "DEAlgorithmImpl: Could not load SwarmBase. Using minimal stubs."
+    abstract type AbstractSwarmAlgorithm end
+    struct OptimizationProblem end
+    struct SwarmSolution end
+end
+
+export DEAlgorithm
+
+mutable struct DEAlgorithm <: AbstractSwarmAlgorithm
     population_size::Int
-    max_iterations::Int
-    F::Float64
-    CR::Float64
-    strategy::Symbol
+    crossover_rate::Float64 # CR
+    mutation_factor::Float64 # F (often denoted as F)
+    
+    # Internal state
+    population::Vector{Vector{Float64}}
+    fitness_values::Vector{Float64}
+    best_solution_position::Vector{Float64}
+    best_solution_fitness::Float64
+    problem_ref::Union{OptimizationProblem, Nothing}
 
-    function DifferentialEvolution(;
-        population_size::Int = 50,
-        max_iterations::Int = 100,
-        F::Float64 = 0.8,
-        CR::Float64 = 0.9,
-        strategy::Symbol = :rand_1_bin
-    )
-        # Parameter validation
-        population_size > 0 || throw(ArgumentError("Population size must be positive"))
-        max_iterations > 0 || throw(ArgumentError("Maximum iterations must be positive"))
-        0.0 < F <= 2.0 || throw(ArgumentError("F must be in (0, 2]"))
-        0.0 <= CR <= 1.0 || throw(ArgumentError("CR must be in [0, 1]"))
-        strategy in [:rand_1_bin, :best_1_bin, :rand_2_bin, :best_2_bin] ||
-            throw(ArgumentError("Unknown strategy: $strategy"))
-
-        new(population_size, max_iterations, F, CR, strategy)
+    function DEAlgorithm(; pop_size::Int=50, cr::Float64=0.9, f_factor::Float64=0.8)
+        # Ensure parameters are valid
+        pop_size < 4 && error("Population size for DE must be at least 4.")
+        0.0 <= cr <= 1.0 || error("Crossover rate (CR) must be between 0 and 1.")
+        0.0 < f_factor <= 2.0 || error("Mutation factor (F) must be between 0 and 2 (typically).") # Common range
+        new(pop_size, cr, f_factor, [], [], [], Inf, nothing)
     end
 end
 
-"""
-    optimize(problem::OptimizationProblem, algorithm::DifferentialEvolution)
+function SwarmBase.initialize!(alg::DEAlgorithm, problem::OptimizationProblem, agents::Vector{String}, config_params::Dict)
+    @info "DEAlgorithm: Initializing population of size $(alg.population_size) for $(problem.dimensions) dimensions."
+    alg.problem_ref = problem
+    alg.population = Vector{Vector{Float64}}(undef, alg.population_size)
+    alg.fitness_values = Vector{Float64}(undef, alg.population_size)
+    
+    initial_best_fitness = problem.is_minimization ? Inf : -Inf
+    alg.best_solution_fitness = initial_best_fitness
+    alg.best_solution_position = zeros(problem.dimensions)
 
-Optimize the given problem using Differential Evolution.
+    # Initial population and their fitness values need to be evaluated.
+    # This can be done here directly or by returning candidates for the Swarm manager.
+    # For simplicity in initialize!, direct evaluation:
+    for i in 1:alg.population_size
+        individual = [problem.bounds[d][1] + rand() * (problem.bounds[d][2] - problem.bounds[d][1]) for d in 1:problem.dimensions]
+        alg.population[i] = individual
+        alg.fitness_values[i] = problem.objective_function(individual)
 
-# Arguments
-- `problem::OptimizationProblem`: The optimization problem to solve
-- `algorithm::DifferentialEvolution`: The DE algorithm configuration
-
-# Returns
-- `OptimizationResult`: The optimization result containing the best solution found
-"""
-function optimize(problem::OptimizationProblem, algorithm::DifferentialEvolution; callback=nothing)
-    # Initialize parameters
-    pop_size = algorithm.population_size
-    max_iter = algorithm.max_iterations
-    F = algorithm.F
-    CR = algorithm.CR
-    strategy = algorithm.strategy
-    dim = problem.dimensions
-    bounds = problem.bounds
-    obj_func = problem.objective_function
-    is_min = problem.is_minimization
-
-    # Initialize population
-    population = zeros(pop_size, dim)
-    fitness = fill(is_min ? Inf : -Inf, pop_size)
-
-    # Initialize best solution
-    best_idx = 1
-    best_position = zeros(dim)
-    best_fitness = is_min ? Inf : -Inf
-
-    # Initialize convergence curve
-    convergence_curve = zeros(max_iter)
-
-    # Function evaluation counter
-    evaluations = 0
-
-    # Initialize population with random positions
-    for i in 1:pop_size
-        for j in 1:dim
-            min_val, max_val = bounds[j]
-            population[i, j] = min_val + rand() * (max_val - min_val)
-        end
-
-        # Evaluate fitness
-        fitness[i] = obj_func(population[i, :])
-        evaluations += 1
-
-        # Update best solution if needed
-        if (is_min && fitness[i] < best_fitness) || (!is_min && fitness[i] > best_fitness)
-            best_fitness = fitness[i]
-            best_position = population[i, :]
-            best_idx = i
+        if (problem.is_minimization && alg.fitness_values[i] < alg.best_solution_fitness) ||
+           (!problem.is_minimization && alg.fitness_values[i] > alg.best_solution_fitness)
+            alg.best_solution_fitness = alg.fitness_values[i]
+            alg.best_solution_position = copy(individual)
         end
     end
+    @info "DEAlgorithm initialized. Initial best fitness: $(alg.best_solution_fitness)"
+end
 
-    # Main DE loop
-    for iter in 1:max_iter
-        for i in 1:pop_size
-            # Create trial vector based on strategy
-            trial = create_trial_vector(population, i, best_idx, F, strategy, dim)
+"""
+    get_all_population_members_positions(alg::DEAlgorithm)::Vector{Vector{Float64}}
 
-            # Perform crossover
-            candidate = perform_crossover(population[i, :], trial, CR, dim)
+Returns the current positions of all individuals in the population.
+Used by Swarm Manager for evaluating the current generation.
+"""
+function SwarmBase.get_all_particle_positions(alg::DEAlgorithm)::Vector{Vector{Float64}} # Renamed to match SwarmBase expectation
+    return [copy(individual) for individual in alg.population]
+end
 
-            # Apply bounds
-            for j in 1:dim
-                min_val, max_val = bounds[j]
-                candidate[j] = clamp(candidate[j], min_val, max_val)
-            end
 
-            # Evaluate candidate
-            candidate_fitness = obj_func(candidate)
-            evaluations += 1
+"""
+    generate_trial_vectors!(alg::DEAlgorithm, problem::OptimizationProblem)::Vector{Vector{Float64}}
 
-            # Selection (replace if better)
-            if (is_min && candidate_fitness < fitness[i]) || (!is_min && candidate_fitness > fitness[i])
-                population[i, :] = candidate
-                fitness[i] = candidate_fitness
+Generates trial vectors for the current population. These vectors need to be evaluated.
+This is an internal helper, called by `step!`.
+"""
+function _generate_trial_vectors(alg::DEAlgorithm, problem::OptimizationProblem)::Vector{Vector{Float64}}
+    trial_vectors = Vector{Vector{Float64}}(undef, alg.population_size)
+    for i in 1:alg.population_size
+        indices = collect(1:alg.population_size)
+        filter!(x -> x != i, indices)
+        if length(indices) < 3
+            @warn "Not enough distinct individuals for DE mutation (target index $i, pop size $(alg.population_size)). Using target as trial."
+            trial_vectors[i] = copy(alg.population[i]) # Fallback: re-evaluate current
+            continue
+        end
+        r1, r2, r3 = indices[randperm(length(indices))[1:3]]
 
-                # Update best solution if needed
-                if (is_min && candidate_fitness < best_fitness) || (!is_min && candidate_fitness > best_fitness)
-                    best_fitness = candidate_fitness
-                    best_position = candidate
-                    best_idx = i
-                end
+        x_target = alg.population[i]
+        x_r1 = alg.population[r1]
+        x_r2 = alg.population[r2]
+        x_r3 = alg.population[r3]
+
+        mutant_vector = x_r1 + alg.mutation_factor * (x_r2 - x_r3)
+        for d in 1:problem.dimensions
+            mutant_vector[d] = clamp(mutant_vector[d], problem.bounds[d][1], problem.bounds[d][2])
+        end
+
+        current_trial_vector = copy(x_target)
+        j_rand = rand(1:problem.dimensions)
+        for d in 1:problem.dimensions
+            if rand() < alg.crossover_rate || d == j_rand
+                current_trial_vector[d] = mutant_vector[d]
             end
         end
+        trial_vectors[i] = current_trial_vector
+    end
+    return trial_vectors
+end
 
-        # Store best fitness for convergence curve
-        convergence_curve[iter] = best_fitness
+"""
+    update_fitness_and_bests!(alg::DEAlgorithm, problem::OptimizationProblem, evaluated_fitnesses::Vector{Float64})
 
-        # Call callback if provided
-        if callback !== nothing
-            callback_result = callback(iter, best_position, best_fitness, population)
-            if callback_result === false
-                # Early termination if callback returns false
-                convergence_curve = convergence_curve[1:iter]
-                break
+DE specific: This function is called by the Swarm Manager after the *current population* (not trial vectors yet)
+has been evaluated. It updates `alg.fitness_values` for the main population and the global best if needed.
+The `evaluated_fitnesses` correspond to `alg.population`.
+"""
+function SwarmBase.update_fitness_and_bests!(alg::DEAlgorithm, problem::OptimizationProblem, evaluated_fitnesses::Vector{Float64})
+    if length(evaluated_fitnesses) != alg.population_size
+        @error "DE: Number of evaluated fitnesses ($(length(evaluated_fitnesses))) does not match population size ($(alg.population_size))."
+        return
+    end
+
+    for i in 1:alg.population_size
+        alg.fitness_values[i] = evaluated_fitnesses[i] # Update fitness of current population member
+        # Update global best based on this current population member
+        if (problem.is_minimization && alg.fitness_values[i] < alg.best_solution_fitness) ||
+           (!problem.is_minimization && alg.fitness_values[i] > alg.best_solution_fitness)
+            alg.best_solution_fitness = alg.fitness_values[i]
+            alg.best_solution_position = copy(alg.population[i])
+        end
+    end
+    @debug "DE: Updated fitnesses for current population. Global best fitness: $(alg.best_solution_fitness)"
+end
+
+
+"""
+    step!(alg::DEAlgorithm, problem::OptimizationProblem, ...)::Vector{Vector{Float64}}
+
+DE step: Generates a new set of *trial vectors* based on the current population.
+These trial vectors are then returned to the Swarm Manager for evaluation.
+The fitness values in `alg.fitness_values` are for the *current main population*,
+assumed to have been updated by `update_fitness_and_bests!` prior to this call.
+"""
+function SwarmBase.step!(alg::DEAlgorithm, problem::OptimizationProblem, agents::Vector{String}, current_iter::Int, shared_data::Dict, config_params::Dict)::Vector{Vector{Float64}}
+    @debug "DEAlgorithm: Step $current_iter - Generating trial vectors."
+    # This function now only generates trial vectors.
+    # The Swarm manager will evaluate these and then call a selection function.
+    trial_vectors_to_eval = _generate_trial_vectors(alg, problem)
+    return trial_vectors_to_eval # These are the candidates for the next generation
+end
+
+"""
+    select_next_generation!(alg::DEAlgorithm, problem::OptimizationProblem, trial_vectors::Vector{Vector{Float64}}, trial_fitnesses::Vector{Float64})
+
+DE selection: Compares trial vectors (and their fitnesses) with the current population
+and selects individuals for the next generation. Updates `alg.population`, 
+`alg.fitness_values`, and the global best solution if improved.
+This is called by the Swarm Manager *after* trial vectors from `step!` have been evaluated.
+"""
+function SwarmBase.select_next_generation!(alg::DEAlgorithm, problem::OptimizationProblem, trial_vectors::Vector{Vector{Float64}}, trial_fitnesses::Vector{Float64})
+    if length(trial_fitnesses) != alg.population_size || length(trial_vectors) != alg.population_size
+        @error "DE Selection: Mismatch in lengths of trial_fitnesses/trial_vectors ($(length(trial_fitnesses))/$(length(trial_vectors))) and population size ($(alg.population_size))."
+        return
+    end
+
+    for i in 1:alg.population_size
+        trial_fitness = trial_fitnesses[i]
+        
+        # Compare trial vector with the corresponding target vector in the current population
+        if (problem.is_minimization && trial_fitness <= alg.fitness_values[i]) ||
+           (!problem.is_minimization && trial_fitness >= alg.fitness_values[i])
+            # Trial vector is better or equal, replaces the target vector
+            alg.population[i] = copy(trial_vectors[i]) # trial_vectors[i] is the one whose fitness is trial_fitness
+            alg.fitness_values[i] = trial_fitness
+
+            # Check if this newly accepted individual is also a new global best
+            if (problem.is_minimization && trial_fitness < alg.best_solution_fitness) ||
+               (!problem.is_minimization && trial_fitness > alg.best_solution_fitness)
+                alg.best_solution_fitness = trial_fitness
+                alg.best_solution_position = copy(trial_vectors[i])
+                # Swarm manager will log this global best update.
             end
         end
+        # If trial is not better, the individual in alg.population[i] (and its fitness in alg.fitness_values[i]) remains unchanged.
     end
-
-    return OptimizationResult(
-        best_position,
-        best_fitness,
-        convergence_curve,
-        max_iter,
-        evaluations,
-        "Differential Evolution",
-        success = true,
-        message = "Optimization completed successfully"
-    )
+    @debug "DE: Selection complete for iteration. New global best fitness: $(alg.best_solution_fitness)"
 end
 
-"""
-    create_trial_vector(population, i, best_idx, F, strategy, dim)
 
-Create a trial vector using the specified mutation strategy.
-
-# Arguments
-- `population`: The current population
-- `i`: Index of the current individual
-- `best_idx`: Index of the best individual
-- `F`: Differential weight
-- `strategy`: Mutation strategy
-- `dim`: Problem dimensions
-
-# Returns
-- Trial vector after mutation
-"""
-function create_trial_vector(population, i, best_idx, F, strategy, dim)
-    pop_size = size(population, 1)
-    trial = zeros(dim)
-
-    if strategy == :rand_1_bin
-        # Select three random individuals, different from i
-        r = randperm(pop_size)
-        r = filter(x -> x != i, r)[1:3]  # Get 3 indices != i
-
-        # DE/rand/1 strategy: x_r1 + F * (x_r2 - x_r3)
-        trial = population[r[1], :] + F * (population[r[2], :] - population[r[3], :])
-    elseif strategy == :best_1_bin
-        # Select two random individuals, different from i and best_idx
-        r = randperm(pop_size)
-        r = filter(x -> x != i && x != best_idx, r)[1:2]  # Get 2 indices != i and != best_idx
-
-        # DE/best/1 strategy: x_best + F * (x_r1 - x_r2)
-        trial = population[best_idx, :] + F * (population[r[1], :] - population[r[2], :])
-    elseif strategy == :rand_2_bin
-        # Select five random individuals, different from i
-        r = randperm(pop_size)
-        r = filter(x -> x != i, r)[1:5]  # Get 5 indices != i
-
-        # DE/rand/2 strategy: x_r1 + F * (x_r2 - x_r3) + F * (x_r4 - x_r5)
-        trial = population[r[1], :] + F * (population[r[2], :] - population[r[3], :]) +
-                                      F * (population[r[4], :] - population[r[5], :])
-    elseif strategy == :best_2_bin
-        # Select four random individuals, different from i and best_idx
-        r = randperm(pop_size)
-        r = filter(x -> x != i && x != best_idx, r)[1:4]  # Get 4 indices != i and != best_idx
-
-        # DE/best/2 strategy: x_best + F * (x_r1 - x_r2) + F * (x_r3 - x_r4)
-        trial = population[best_idx, :] + F * (population[r[1], :] - population[r[2], :]) +
-                                         F * (population[r[3], :] - population[r[4], :])
+function SwarmBase.should_terminate(alg::DEAlgorithm, current_iter::Int, max_iter::Int, best_solution_from_swarm::Union{SwarmSolution,Nothing}, target_fitness::Union{Float64,Nothing}, problem::OptimizationProblem)::Bool
+    # `best_solution_from_swarm` is the one maintained by the Swarm manager, reflecting the algorithm's `alg.best_solution_fitness`
+    if !isnothing(best_solution_from_swarm) && !isnothing(target_fitness)
+        if problem.is_minimization && best_solution_from_swarm.fitness <= target_fitness return true end
+        if !problem.is_minimization && best_solution_from_swarm.fitness >= target_fitness return true end
     end
-
-    return trial
+    return current_iter >= max_iter
 end
 
-"""
-    perform_crossover(target, trial, CR, dim)
-
-Perform binomial crossover between target and trial vectors.
-
-# Arguments
-- `target`: The target vector
-- `trial`: The trial vector
-- `CR`: Crossover probability
-- `dim`: Problem dimensions
-
-# Returns
-- Candidate vector after crossover
-"""
-function perform_crossover(target, trial, CR, dim)
-    candidate = copy(target)
-    j_rand = rand(1:dim)  # Ensure at least one component from trial
-
-    for j in 1:dim
-        if rand() <= CR || j == j_rand
-            candidate[j] = trial[j]
-        end
-    end
-
-    return candidate
-end
-
-end # module
+end # module DEAlgorithmImpl

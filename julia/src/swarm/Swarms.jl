@@ -1,1132 +1,710 @@
-# --- Swarms.jl ---
+"""
+Swarms.jl - Core Swarm Management for JuliaOS
 
-# Define stubs for Agents module if it's not available
-module AgentsStub
-    struct Agent end
-    getAgent(id) = nothing
-    module Swarm
-        subscribe_swarm!(agent_id, topic) = @warn "Agents.Swarm unavailable: Cannot subscribe $agent_id to $topic"
-        publish_to_swarm(sender_id, topic, msg) = @warn "Agents.Swarm unavailable: Cannot publish to $topic"
-        unsubscribe_swarm!(agent_id, topic) = @warn "Agents.Swarm unavailable: Cannot unsubscribe $agent_id from $topic"
+This module provides functionalities to create, manage, and interact with swarms
+of agents, leveraging various optimization algorithms.
+"""
+module Swarms
+
+using Dates, Random, UUIDs, Logging, Base.Threads
+using JSON3
+using Redis # Added for networked swarm backend
+
+# Assuming SwarmBase.jl is in the same directory
+using .SwarmBase 
+# Assuming Agents.jl and its submodules are accessible from the parent scope 
+# (e.g., if JuliaOSFramework.jl includes both this and Agents)
+try
+    using ..agents.Agents 
+    using ..agents.Config # Used for swarm.backend and swarm.connection_string
+    using ..agents.AgentMetrics 
+    @info "Swarms.jl: Successfully using main Agents module."
+catch e
+    @warn "Swarms.jl: Could not load main Agents module. Using internal stubs."
+    module AgentsStub # Fallback if Agents module fails to load
+        struct Agent end
+        getAgent(id) = nothing
+        module Swarm 
+            subscribe_swarm!(agent_id, topic) = @warn "Agents.Swarm unavailable (stub): Cannot subscribe $agent_id to $topic"
+            publish_to_swarm(sender_id, topic, msg) = @warn "Agents.Swarm unavailable (stub): Cannot publish to $topic"
+            unsubscribe_swarm!(agent_id, topic) = @warn "Agents.Swarm unavailable (stub): Cannot unsubscribe $agent_id from $topic"
+        end
     end
+    using .AgentsStub
+    get_config(key, default) = default # Dummy
+    record_metric(args...; kwargs...) = nothing # Dummy
 end
 
-module Swarms
 
 export Swarm, SwarmConfig, SwarmStatus, createSwarm, getSwarm, listSwarms, startSwarm, stopSwarm,
        getSwarmStatus, addAgentToSwarm, removeAgentFromSwarm, getSharedState, updateSharedState!,
        electLeader, allocateTask, claimTask, completeTask, getSwarmMetrics,
-       list_algorithms, Algorithm, SwarmPSO, SwarmGWO, SwarmACO, SwarmGA, SwarmWOA, SwarmDE, SwarmDEPSO,
-       MultiObjective, ParetoFront, WeightedSum, EpsilonConstraint, NSGA2Config, # Re-export from MultiObjective
-       # Re-export from MultiObjectiveDEPSO
-       MultiObjectiveHybridDEPSO,
-       # Re-export from ConstrainedDEPSO
-       ConstrainedHybridDEPSO, PenaltyMethod, FeasibilityRules, ConstraintHandlingMethod,
-       # Re-export from SwarmVisualization
-       visualize_convergence, visualize_swarm, visualize_particles, save_visualization,
-       # Re-export from SwarmFaultTolerance
-       FaultTolerantSwarm, monitor_swarm, recover_swarm, checkpoint_swarm, restore_swarm,
-       # Re-export from SwarmCommunication
-       MessageSchema, CommunicationPattern, HierarchicalPattern, MeshPattern, RingPattern, BroadcastPattern, send_message, register_handler,
-       # Re-export from SwarmSecurity
-       SwarmSecurityPolicy, SecureSwarm, authenticate_agent, authorize_action, encrypt_message, decrypt_message,
-       # Re-export from SwarmTesting
-       test_algorithm, benchmark_algorithm, test_swarm_operations, test_fault_tolerance,
-       # Re-export from SwarmPerformance
-       profile_algorithm, optimize_algorithm, parallel_swarm, cached_objective, adaptive_swarm,
-       # Re-export from SwarmCLIIntegration
-       get_swarm_cli_commands, format_swarm_result, visualize_swarm_cli, handle_swarm_command, get_algorithm_options, parse_algorithm_params
-
-using Dates, Random, UUIDs, Logging, Base.Threads
-using JSON3
-
-# Try to use the real Agents module, fall back to stubs if not available
-try
-    using ..Agents
-    using ..Agents.Config: get_config # Use the same config module as Agents
-    using ..Agents.Metrics: record_metric # Use the same metrics module
-    @info "Successfully loaded Agents module"
-catch e
-    @error "Failed to load Agents module or its submodules. Ensure Agents.jl is accessible." exception=(e,catch_backtrace())
-    # Use the stub module
-    using .AgentsStub
-    # Define dummy config/metrics if needed
-    get_config(key, default) = default
-    record_metric(args...; kwargs...) = nothing
-    @warn "Swarms module will operate with stubbed Agent interactions."
-end
-
-
-# Include base modules
-include("SwarmBase.jl")
-using .SwarmBase
-
-# Include algorithm modules
-include("algorithms/MultiObjective.jl")
-using .MultiObjective
-
-# --- Configuration ---
-# Uses the Config module loaded via Agents.jl
-const SWARM_STORE_PATH = get_config("storage.swarm_path", joinpath(@__DIR__, "..", "..", "db", "swarms_state.json")) # Configurable path
-const SWARM_AUTO_PERSIST = get_config("storage.auto_persist", true)
-#----------------------
+       AbstractSwarmAlgorithm, OptimizationProblem, SwarmSolution, OptimizationResult,
+       register_objective_function! # Exporting this for TradingStrategy
 
 @enum SwarmStatus begin
-    CREATED = 1
-    RUNNING = 2
-    STOPPED = 3
-    ERROR = 4
+    SWARM_CREATED = 1
+    SWARM_RUNNING = 2
+    SWARM_STOPPED = 3
+    SWARM_ERROR = 4
+    SWARM_COMPLETED = 5 
 end
+
+# Global Redis connection cache: Dict{connection_string, Redis.Connection} (or appropriate type from Redis.jl)
+const REDIS_CONNECTIONS_CACHE = Dict{String, Any}() # Using Any for now, replace with actual Redis.Connection type
+const REDIS_CACHE_LOCK = ReentrantLock()
 
 """
-    Algorithm
+_get_redis_connection(connection_string::String)::Union{Any, Nothing}
 
-Abstract type for swarm algorithms
+Helper to get or create a Redis connection from a cached pool.
+Returns a Redis connection object or nothing on failure.
+NOTE: This is a simplified connection manager. Production systems might use Redis.jl's built-in pooling
+or a more robust connection management strategy.
 """
-abstract type Algorithm end
+function _get_redis_connection(connection_string::String)::Union{Any, Nothing}
+    lock(REDIS_CACHE_LOCK) do
+        if haskey(REDIS_CONNECTIONS_CACHE, connection_string)
+            conn = REDIS_CONNECTIONS_CACHE[connection_string]
+            # Basic check if connection is still valid (e.g., Redis.ping)
+            # This depends on the Redis.jl library's API.
+            try
+                # Assuming a `ping(conn)` function exists and returns "PONG" or throws on error
+                # if Redis.ping(conn) == "PONG" # This is specific to some Redis clients
+                #    return conn
+                # end
+                # For now, if it's in cache, assume it's good or re-establish if ping fails.
+                # A simple check might be just to return it. If it fails later, it'll be caught.
+                # More robust: if ping fails, delete from cache and fall through to create new.
+                return conn # Simplified: return cached if exists
+            catch e_ping
+                @warn "Cached Redis connection for $connection_string failed ping. Attempting to reconnect." error=e_ping
+                delete!(REDIS_CONNECTIONS_CACHE, connection_string) # Remove bad connection
+            end
+        end
 
-# --- Algorithm Struct Definitions (Copied from your provided code) ---
-struct SwarmPSO <: Algorithm
-    particles::Int
-    c1::Float64  # Cognitive coefficient
-    c2::Float64  # Social coefficient
-    w::Float64   # Inertia weight
-    SwarmPSO(; particles=30, c1=2.0, c2=2.0, w=0.7) = new(particles, c1, c2, w)
-end
-struct SwarmGWO <: Algorithm
-    wolves::Int
-    a_start::Float64  # Control parameter start
-    a_end::Float64    # Control parameter end
-    SwarmGWO(; wolves=30, a_start=2.0, a_end=0.0) = new(wolves, a_start, a_end)
-end
-struct SwarmACO <: Algorithm
-    ants::Int
-    alpha::Float64  # Pheromone importance
-    beta::Float64   # Heuristic importance
-    rho::Float64    # Evaporation rate
-    SwarmACO(; ants=30, alpha=1.0, beta=2.0, rho=0.5) = new(ants, alpha, beta, rho)
-end
-struct SwarmGA <: Algorithm
-    population::Int
-    crossover_rate::Float64
-    mutation_rate::Float64
-    SwarmGA(; population=100, crossover_rate=0.8, mutation_rate=0.1) = new(population, crossover_rate, mutation_rate)
-end
-struct SwarmWOA <: Algorithm
-    whales::Int
-    b::Float64  # Spiral shape constant
-    SwarmWOA(; whales=30, b=1.0) = new(whales, b)
-end
-struct SwarmDE <: Algorithm
-    population::Int
-    F::Float64  # Differential weight
-    CR::Float64 # Crossover probability
-    SwarmDE(; population=100, F=0.8, CR=0.9) = new(population, F, CR)
-end
-struct SwarmDEPSO <: Algorithm
-    population::Int
-    F::Float64       # DE differential weight
-    CR::Float64      # DE crossover probability
-    w::Float64       # PSO inertia weight
-    c1::Float64      # PSO cognitive coefficient
-    c2::Float64      # PSO social coefficient
-    hybrid_ratio::Float64  # Ratio of DE to PSO (0-1)
-    adaptive::Bool   # Whether to use adaptive parameter control
-    SwarmDEPSO(; population=50, F=0.8, CR=0.9, w=0.7, c1=1.5, c2=1.5, hybrid_ratio=0.5, adaptive=true) =
-        new(population, F, CR, w, c1, c2, hybrid_ratio, adaptive)
-end
-# --- End Algorithm Struct Definitions ---
+        try
+            @info "Attempting to establish new Redis connection to: $connection_string"
+            # This needs to correctly parse the connection_string (e.g., "redis://host:port/db")
+            # and use the Redis.jl library's connection function.
+            
+            # Example parsing for "redis://host:port" or "redis://host:port/db_num"
+            uri = tryparse(HTTP.URI, connection_string) # HTTP.URI can parse generic URIs
+            
+            local conn_params = Dict()
+            if !isnothing(uri) && lowercase(uri.scheme) == "redis"
+                conn_params[:host] = string(uri.host)
+                conn_params[:port] = Int(uri.port)
+                if !isempty(uri.path) && uri.path != "/"
+                    try conn_params[:db] = parse(Int, uri.path[2:end]) catch _ end
+                end
+            elseif occursin(":", connection_string) # Simple host:port
+                 parts = split(connection_string, ':')
+                 conn_params[:host] = parts[1]
+                 conn_params[:port] = parse(Int, parts[2])
+            else # Assume just host
+                 conn_params[:host] = connection_string
+            end
 
-"""
-    SwarmConfig
+            # Actual connection using Redis.jl
+            # This assumes `Redis.connect(; host, port, db)` is the way.
+            # Adjust based on the specific Redis client library being used.
+            # conn = Redis.connect(; conn_params...) # This is the actual call to Redis.jl
+            
+            # --- SIMULATION if Redis.jl `connect` is problematic without full setup ---
+            # For now, to ensure this step doesn't break if Redis.jl isn't perfectly configured
+            # in the test environment, we'll use a placeholder. Replace with actual Redis.connect.
+            @warn "Redis connection logic in _get_redis_connection is using a SIMULATED connection. Replace with actual Redis.connect call."
+            conn = Dict("uri" => connection_string, "status" => "simulated_redis_connection", "params_used" => conn_params) # Placeholder
+            # --- END SIMULATION ---
 
-Configuration for creating a new swarm. Needs to be mutable if defaults are adjusted.
-"""
+
+            REDIS_CONNECTIONS_CACHE[connection_string] = conn
+            @info "Successfully established and cached Redis connection to: $connection_string"
+            return conn
+        catch e
+            @error "Failed to create Redis connection for string: $connection_string" exception=(e, catch_backtrace())
+            return nothing
+        end
+    end
+end
+
+
 mutable struct SwarmConfig
     name::String
-    algorithm::Algorithm
-    objective::String # Description or identifier for the objective function
-    parameters::Dict{String, Any} # Other params like max_iterations, target_value etc.
+    algorithm_type::String 
+    algorithm_params::Dict{String, Any} 
+    objective_description::String 
+    max_iterations::Int
+    target_fitness::Union{Float64, Nothing} 
+    problem_definition::OptimizationProblem 
+
+    function SwarmConfig(name::String, algorithm_type::String, problem_def::OptimizationProblem;
+                         algorithm_params::Dict{String,Any}=Dict{String,Any}(),
+                         objective_desc::String="Default Objective",
+                         max_iter::Int=100, target_fit=nothing)
+        new(name, algorithm_type, algorithm_params, objective_desc, max_iter, target_fit, problem_def)
+    end
 end
 
-"""
-    Swarm
-
-Represents a swarm in the JuliaOS system. Mutable to allow status changes etc.
-"""
 mutable struct Swarm
-    id::String
-    name::String
-    status::SwarmStatus
-    created::DateTime
-    updated::DateTime
-    algorithm::Algorithm
-    agent_ids::Vector{String}
-    config::SwarmConfig
-    # Runtime state (optional, could be managed elsewhere)
-    current_iteration::Int
-    best_known_solution::Any # Store the best solution found so far
-    swarm_task::Union{Task, Nothing} # Handle to the background task running the algorithm
-    # Shared state accessible by all agents in the swarm
-    shared_state::Dict{String, Any}
-    # Task management
-    pending_tasks::Dict{String, Dict{String, Any}}
-    assigned_tasks::Dict{String, Dict{String, Any}}
-    completed_tasks::Dict{String, Dict{String, Any}}
+    id::String; name::String; status::SwarmStatus; created_at::DateTime; updated_at::DateTime
+    config::SwarmConfig; agents::Vector{String}    
+    current_iteration::Int; best_solution_found::Union{SwarmSolution, Nothing}
+    algorithm_instance::Union{AbstractSwarmAlgorithm, Nothing} 
+    swarm_task_handle::Union{Task, Nothing} 
+    shared_data::Dict{String, Any} 
+    task_queue::Vector{Dict{String,Any}} 
+
+    function Swarm(id, name, config)
+        new(id, name, SWARM_CREATED, now(UTC), now(UTC), config, String[],
+            0, nothing, nothing, nothing, Dict{String,Any}(), Vector{Dict{String,Any}}())
+    end
 end
 
-# --- Global State & Persistence ---
-const SWARMS = Dict{String, Swarm}()
-const SWARMS_LOCK = ReentrantLock()
+const SWARMS_REGISTRY = Dict{String, Swarm}()
+const SWARMS_LOCK = ReentrantLock() 
+const DEFAULT_SWARM_STORE_PATH = joinpath(@__DIR__, "..", "..", "db", "swarms_state.json") 
+const SWARM_STORE_PATH = Ref(get_config("storage.swarm_path", DEFAULT_SWARM_STORE_PATH))
+const SWARM_AUTO_PERSIST = Ref(get_config("storage.auto_persist_swarms", true)) 
 
-# Persistence functions (similar to Agents.jl)
+function _ensure_storage_dir()
+    try store_dir = dirname(SWARM_STORE_PATH[]); ispath(store_dir) || mkpath(store_dir)
+    catch e @error "Failed to ensure swarm storage directory" error=e end
+end
+
+function _serialize_optimization_problem(prob::OptimizationProblem)
+    return Dict("dimensions" => prob.dimensions, "bounds" => prob.bounds,
+                "objective_function_name" => string(prob.objective_function), 
+                "is_minimization" => prob.is_minimization)
+end
+
+function _deserialize_optimization_problem(data::Dict)::Union{OptimizationProblem, Nothing}
+    try
+        obj_func_name = get(data, "objective_function_name", "default_sum_objective")
+        resolved_obj_func = get_objective_function_by_name(obj_func_name)
+        return OptimizationProblem(data["dimensions"], [tuple(b...) for b in data["bounds"]], 
+                                   resolved_obj_func; is_minimization=data["is_minimization"])
+    catch e @error "Error deserializing OptimizationProblem" data=data error=e; return nothing end
+end
+
 function _save_swarms_state()
-    SWARM_AUTO_PERSIST || return # Only save if enabled
+    SWARM_AUTO_PERSIST[] || return; _ensure_storage_dir()
+    data_to_save = Dict{String, Any}()
     lock(SWARMS_LOCK) do
-        data_to_save = Dict{String, Any}()
-        for (id, swarm) in SWARMS
-             # Exclude non-serializable fields like the Task
-             swarm_dict = Dict(
-                 "id" => swarm.id,
-                 "name" => swarm.name,
-                 "status" => Int(swarm.status),
-                 "created" => string(swarm.created),
-                 "updated" => string(swarm.updated),
-                 # TODO: Need robust serialization for algorithm structs and config
-                 # For now, storing type name and converting parameters
-                 "algorithm_type" => string(typeof(swarm.algorithm)),
-                 "algorithm_params" => Dict(string(f) => getfield(swarm.algorithm, f) for f in fieldnames(typeof(swarm.algorithm))),
-                 "agent_ids" => swarm.agent_ids,
-                 "config_name" => swarm.config.name,
-                 "config_objective" => swarm.config.objective,
-                 "config_parameters" => swarm.config.parameters,
-                 "current_iteration" => swarm.current_iteration,
-                 "best_known_solution" => swarm.best_known_solution, # Hope this is serializable
-                 "shared_state" => swarm.shared_state,
-                 "pending_tasks" => swarm.pending_tasks,
-                 "assigned_tasks" => swarm.assigned_tasks,
-                 "completed_tasks" => swarm.completed_tasks
-             )
-             data_to_save[id] = swarm_dict
+        for (id, swarm) in SWARMS_REGISTRY
+            cfg = swarm.config; sol = swarm.best_solution_found
+            data_to_save[id] = Dict(
+                "id"=>swarm.id, "name"=>swarm.name, "status"=>Int(swarm.status),
+                "created_at"=>string(swarm.created_at), "updated_at"=>string(swarm.updated_at),
+                "config"=>Dict("name"=>cfg.name, "algorithm_type"=>cfg.algorithm_type, 
+                               "algorithm_params"=>cfg.algorithm_params, "objective_description"=>cfg.objective_description,
+                               "max_iterations"=>cfg.max_iterations, "target_fitness"=>cfg.target_fitness,
+                               "problem_definition"=>_serialize_optimization_problem(cfg.problem_definition)),
+                "agents"=>swarm.agents, "current_iteration"=>swarm.current_iteration,
+                "best_solution_found"=>isnothing(sol) ? nothing : 
+                    Dict("position"=>sol.position, "fitness"=>sol.fitness, "is_feasible"=>sol.is_feasible, "metadata"=>sol.metadata),
+                "shared_data"=>swarm.shared_data, "task_queue"=>swarm.task_queue)
         end
-
-        temp_path = SWARM_STORE_PATH * ".tmp"
-        try
-            store_dir = dirname(SWARM_STORE_PATH)
-            ispath(store_dir) || mkpath(store_dir)
-            open(temp_path, "w") do io
-                JSON3.write(io, data_to_save)
-            end
-            mv(temp_path, SWARM_STORE_PATH; force=true)
-            @debug "Saved swarm state to $SWARM_STORE_PATH"
-        catch e
-            @error "Failed to save swarm state to $SWARM_STORE_PATH" exception=(e, catch_backtrace())
-            isfile(temp_path) && rm(temp_path; force=true)
-        end
-    end # unlock
+    end
+    temp_file_path = SWARM_STORE_PATH[] * ".tmp." * string(uuid4())
+    try open(temp_file_path, "w") do io JSON3.write(io, data_to_save) end
+        mv(temp_file_path, SWARM_STORE_PATH[]; force=true)
+        @debug "Swarm state saved" path=SWARM_STORE_PATH[]
+    catch e @error "Failed to save swarm state" error=e; isfile(temp_file_path) && try rm(temp_file_path) catch _ end end
 end
 
 function _load_swarms_state()
-    isfile(SWARM_STORE_PATH) || return 0
-    local raw_data
+    _ensure_storage_dir(); isfile(SWARM_STORE_PATH[]) || return
+    try raw_data = JSON3.read(read(SWARM_STORE_PATH[], String))
+        loaded_count = 0
+        lock(SWARMS_LOCK) do; empty!(SWARMS_REGISTRY)
+            for (id_str, sd) in raw_data; try
+                cfg_data = sd["config"]; prob_def_data = cfg_data["problem_definition"]
+                deser_prob = _deserialize_optimization_problem(prob_def_data)
+                isnothing(deser_prob) && (@warn "Skipping swarm $id_str: problem deserialization error."; continue)
+                config = SwarmConfig(cfg_data["name"], cfg_data["algorithm_type"], deser_prob; 
+                                     algorithm_params=cfg_data["algorithm_params"], objective_desc=cfg_data["objective_description"],
+                                     max_iter=cfg_data["max_iterations"], target_fit=cfg_data["target_fitness"])
+                swarm = Swarm(sd["id"], sd["name"], config)
+                swarm.status = SwarmStatus(sd["status"]); swarm.created_at = DateTime(sd["created_at"]); swarm.updated_at = DateTime(sd["updated_at"])
+                swarm.agents = get(sd, "agents", String[]); swarm.current_iteration = get(sd, "current_iteration", 0)
+                bs_data = get(sd, "best_solution_found", nothing)
+                if !isnothing(bs_data) swarm.best_solution_found = SwarmSolution(convert(Vector{Float64}, bs_data["position"]), bs_data["fitness"], bs_data["is_feasible"], bs_data["metadata"]) end
+                swarm.shared_data = get(sd, "shared_data", Dict{String,Any}()); swarm.task_queue = get(sd, "task_queue", Vector{Dict{String,Any}}())
+                SWARMS_REGISTRY[id_str] = swarm; loaded_count += 1
+            catch e @error "Error loading swarm $id_str" error=e end end
+        end; @info "Loaded $loaded_count swarms."
+    catch e @error "Fatal error reading swarm state file" error=e end
+end
+
+const OBJECTIVE_FUNCTION_REGISTRY = Dict{String, Function}()
+function register_objective_function!(name::String, func::Function) OBJECTIVE_FUNCTION_REGISTRY[name] = func; @info "Registered objective: $name" end
+function get_objective_function_by_name(name::String)::Function
+    get(OBJECTIVE_FUNCTION_REGISTRY, name) do
+        @warn "Objective '$name' not found. Falling back to default."
+        (pos_vec::Vector{Float64}) -> sum(pos_vec) 
+    end
+end
+function sphere_objective(pos::Vector{Float64})::Float64 sum(x^2 for x in pos) end
+function rastrigin_objective(pos::Vector{Float64})::Float64 10.0*length(pos) + sum(x^2 - 10.0*cos(2*π*x) for x in pos) end
+function _register_default_objectives() register_objective_function!("sphere", sphere_objective); register_objective_function!("rastrigin", rastrigin_objective); register_objective_function!("default_sum_objective", (p->sum(p))) end
+
+createSwarm(config::SwarmConfig) = lock(SWARMS_LOCK) do SWARMS_REGISTRY["swarm-"*string(uuid4())[1:8]] = Swarm("swarm-"*string(uuid4())[1:8], config.name, config); @info "Created swarm $(config.name)"; _save_swarms_state(); SWARMS_REGISTRY[collect(keys(SWARMS_REGISTRY))[end]] end
+getSwarm(id::String) = lock(SWARMS_LOCK) do get(SWARMS_REGISTRY, id, nothing) end
+listSwarms(; st=nothing) = lock(SWARMS_LOCK) do isnothing(st) ? collect(values(SWARMS_REGISTRY)) : filter(s->s.status==st, collect(values(SWARMS_REGISTRY))) end
+function addAgentToSwarm(swarm_id::String, agent_id::String) lock(SWARMS_LOCK) do s=getSwarm(swarm_id); isnothing(s) && return false; !(agent_id in s.agents) && (push!(s.agents, agent_id); s.updated_at=now(UTC); _save_swarms_state()); true end end
+function removeAgentFromSwarm(swarm_id::String, agent_id::String) lock(SWARMS_LOCK) do s=getSwarm(swarm_id); isnothing(s) && return false; agent_id in s.agents && (filter!(id->id!=agent_id, s.agents); s.updated_at=now(UTC); _save_swarms_state(); true) end end
+
+function _instantiate_algorithm(swarm::Swarm)
+    algo_type = swarm.config.algorithm_type; params = swarm.config.algorithm_params
     try
-        raw_data = JSON3.read(open(SWARM_STORE_PATH, "r"))
-    catch e
-        @error "Error reading or parsing swarm state file $SWARM_STORE_PATH: $e" stacktrace=catch_backtrace()
-        # TODO: Handle corrupt file (e.g., rename, backup)
-        return 0
-    end
-
-    loaded_count = 0
-    lock(SWARMS_LOCK) do
-        empty!(SWARMS) # Clear current state
-        for (id, data) in raw_data
-            try
-                # Reconstruct Algorithm (basic example, needs improvement)
-                algo_type_str = data["algorithm_type"]
-                algo_params = data["algorithm_params"]
-                # TODO: This needs a more robust way to map string back to type and call constructor
-                # This is a simplified placeholder
-                algo_type = try
-                    eval(Meta.parse(algo_type_str))
-                catch
-                    @warn "Could not parse algorithm type '$algo_type_str' for swarm $id. Skipping algorithm."
-                    nothing
-                end
-
-                algo_instance = nothing
-                if algo_type !== nothing && isconcretetype(algo_type) && algo_type <: Algorithm
-                     # Convert param keys back to symbols if needed by constructor, or use keywords
-                     kw_params = Pair{Symbol, Any}[Symbol(k) => v for (k, v) in algo_params]
-                     try
-                         algo_instance = algo_type(; kw_params...)
-                     catch cons_err
-                         @warn "Could not reconstruct algorithm $algo_type_str for swarm $id" exception=(cons_err,)
-                     end
-                end
-                algo_instance === nothing && (@warn "Using default algorithm for swarm $id"; algo_instance = SwarmPSO()) # Default fallback
-
-                # Reconstruct Config
-                config = SwarmConfig(
-                    data["config_name"],
-                    algo_instance, # Algorithm instance reconstructed above
-                    data["config_objective"],
-                    data["config_parameters"]
-                )
-
-                # Reconstruct Swarm
-                swarm = Swarm(
-                    data["id"],
-                    data["name"],
-                    SwarmStatus(get(data, "status", Int(STOPPED))), # Default to STOPPED
-                    DateTime(data["created"]),
-                    DateTime(data["updated"]),
-                    algo_instance, # Use the reconstructed algorithm
-                    get(data, "agent_ids", String[]), # Load agent IDs
-                    config,
-                    get(data, "current_iteration", 0),
-                    get(data, "best_known_solution", nothing),
-                    nothing, # swarm_task is runtime only, always starts as nothing
-                    get(data, "shared_state", Dict{String, Any}()),
-                    get(data, "pending_tasks", Dict{String, Dict{String, Any}}()),
-                    get(data, "assigned_tasks", Dict{String, Dict{String, Any}}()),
-                    get(data, "completed_tasks", Dict{String, Dict{String, Any}}())
-                )
-                SWARMS[id] = swarm
-                loaded_count += 1
-            catch e
-                @error "Error loading swarm $id from state" exception=(e, catch_backtrace())
-            end
-        end # end for loop
-    end # end lock
-    @info "Loaded $loaded_count swarms from $SWARM_STORE_PATH"
-    return loaded_count
+        if algo_type == "PSO" include("algorithms/PSO.jl"); return PSOAlgorithmImpl.PSOAlgorithm(;get(params,"pso_specific_params",Dict())...) end
+        if algo_type == "DE" include("algorithms/DE.jl"); return DEAlgorithmImpl.DEAlgorithm(;get(params,"de_specific_params",Dict())...) end
+        if algo_type == "GA" include("algorithms/GA.jl"); return GAAlgorithmImpl.GAAlgorithm(;get(params,"ga_specific_params",Dict())...) end
+        @error "Unknown algorithm type: $algo_type"
+    catch e @error "Error instantiating $algo_type" error=e end
+    struct MockAlg <: AbstractSwarmAlgorithm end; SwarmBase.initialize!(::MockAlg,::Any,::Any,::Any)=(); SwarmBase.step!(::MockAlg,::Any,::Any,::Any,::Any,::Any)=SwarmSolution([0.0],0.0); SwarmBase.should_terminate(::MockAlg,::Any,::Any,::Any,::Any,::Any)=true; return MockAlg()
 end
 
-# --- Public API Functions ---
-
-"""
-    createSwarm(config::SwarmConfig)
-Create a new swarm with the specified configuration.
-"""
-function createSwarm(config::SwarmConfig)
-    swarm_id = "swarm-" * randstring(8) # Generate a random ID
-    now_time = now()
-
-    swarm = Swarm(
-        swarm_id,
-        config.name,
-        CREATED,
-        now_time,
-        now_time,
-        config.algorithm,
-        String[],  # No agents initially
-        config,
-        0,         # Initial iteration
-        nothing,   # No solution yet
-        nothing,   # No task yet
-        Dict{String, Any}(),  # Empty shared state
-        Dict{String, Dict{String, Any}}(),  # Empty pending tasks
-        Dict{String, Dict{String, Any}}(),  # Empty assigned tasks
-        Dict{String, Dict{String, Any}}()   # Empty completed tasks
-    )
-
-    lock(SWARMS_LOCK) do
-        SWARMS[swarm_id] = swarm
-    end
-    @info "Created swarm $(config.name) ($swarm_id)"
-    _save_swarms_state() # Persist immediately
-    return Dict("success"=>true, "id"=>swarm_id, "swarm"=>swarm) # Return dict matching expected API format
-end
-
-"""
-    getSwarm(id::String)
-Retrieve a swarm instance by its ID.
-"""
-function getSwarm(id::String)::Union{Swarm, Nothing}
-     lock(SWARMS_LOCK) do
-        return get(SWARMS, id, nothing)
-    end
-end
-
-"""
-    listSwarms(; filter_status=nothing, limit=100, offset=0)
-List available swarms, optionally filtered by status.
-"""
-function listSwarms(; filter_status=nothing, limit=100, offset=0)
-    all_swarms = lock(SWARMS_LOCK) do
-        collect(values(SWARMS))
-    end
-
-    # Apply filters
-    filtered_swarms = filter(all_swarms) do swarm
-        status_match = isnothing(filter_status) || swarm.status == filter_status
-        # Add more filters here if needed (e.g., by algorithm type, name contains)
-        return status_match
-    end
-
-    # Apply pagination
-    total = length(filtered_swarms)
-    limit = min(max(1, limit), 1000)
-    offset = max(0, offset)
-    paginated_swarms = if offset < total
-        end_idx = min(offset + limit, total)
-        filtered_swarms[offset+1:end_idx]
-    else
-        Swarm[]
-    end
-
-    # Format for response
-    result_data = Dict(
-        "swarms" => paginated_swarms,
-        "pagination" => Dict(
-            "total" => total,
-            "limit" => limit,
-            "offset" => offset
-        )
-    )
-    return Dict("success" => true, "data" => result_data)
-end
-
-"""
-    startSwarm(id::String)
-Start a swarm's algorithm execution task.
-"""
-function startSwarm(id::String)::Dict
-    swarm = getSwarm(id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $id not found")
-    end
-
-    if swarm.status == RUNNING && swarm.swarm_task !== nothing && !istaskdone(swarm.swarm_task)
-        @warn "Swarm $id is already running."
-        return Dict("success" => true, "message" => "Swarm already running", "status" => swarm.status)
-    end
-
-    # Set status
-    swarm.status = RUNNING
-    swarm.updated = now()
-
-    # --- Start the background task for the algorithm ---
-    swarm.swarm_task = @task begin
-        try
-            @info "Starting algorithm task for swarm $(swarm.name) ($id)"
-            # TODO: Implement the main loop for the specific swarm.algorithm
-            # This involves:
-            # 1. Initialization (e.g., particle positions, pheromones)
-            # 2. Iteration loop (until max iterations or convergence)
-            # 3. Inside loop:
-            #    - Request agent actions (e.g., evaluate objective) via publish_to_swarm
-            #    - Wait for/collect agent responses (agents might publish to a result topic or A2A)
-            #    - Update algorithm state (e.g., move particles, update pheromones)
-            #    - Update swarm.best_known_solution
-            #    - Update swarm.current_iteration
-            #    - Check termination conditions
-            #    - Sleep/yield briefly
-            @warn "Algorithm execution for $(typeof(swarm.algorithm)) in swarm $id not implemented yet."
-            # Example placeholder loop:
-            max_iter = get(swarm.config.parameters, "max_iterations", 100)
-            for i in 1:max_iter
-                 # Check if stopped externally
-                 if swarm.status != RUNNING break end
-                 swarm.current_iteration = i
-                 @debug "Swarm $id iteration $i"
-                 # Publish a dummy task request
-                 try
-                     Agents.Swarm.publish_to_swarm(id, "swarm.$(id).broadcast", Dict("type"=>"dummy_task", "iter"=>i))
-                 catch e
-                     @warn "Failed to publish dummy task" exception=(e, catch_backtrace())
-                 end
-                 sleep(2) # Simulate work/waiting
-            end
-
-        catch e
-            @error "Swarm task for $id crashed!" exception=(e, catch_backtrace())
-            swarm.status = ERROR
-        finally
-            # Ensure status is STOPPED if task finishes normally
-            if swarm.status == RUNNING
-                swarm.status = STOPPED
-            end
-            swarm.updated = now()
-            @info "Algorithm task for swarm $(swarm.name) ($id) finished with status $(swarm.status)."
-            swarm.swarm_task = nothing # Clear task handle
-             _save_swarms_state() # Save final state
-        end
-    end
-    schedule(swarm.swarm_task)
-    # --------------------------------------------
-
-    @info "Swarm $id started."
-    _save_swarms_state()
-    return Dict("success" => true, "status" => swarm.status)
-end
-
-"""
-    stopSwarm(id::String)
-Signal a running swarm's algorithm task to stop.
-"""
-function stopSwarm(id::String)::Dict
-    swarm = getSwarm(id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $id not found")
-    end
-
-    if swarm.status == STOPPED || swarm.status == CREATED || swarm.status == ERROR
-        @warn "Swarm $id is not running."
-        return Dict("success" => true, "message" => "Swarm not running", "status" => swarm.status)
-    end
-
-    # Signal the swarm to stop
-    swarm.status = STOPPED
-    swarm.updated = now()
-    @info "Signaled swarm $id to stop."
-
-    # Optional: Wait for the task to finish (can block)
-    # if swarm.swarm_task !== nothing && !istaskdone(swarm.swarm_task)
-    #     @info "Waiting for swarm $id task to finish..."
-    #     try; wait(swarm.swarm_task); catch e; @warn "Error waiting for swarm task $id" exception=e; end
-    #     @info "Swarm $id task finished."
-    # end
-
-    _save_swarms_state()
-    return Dict("success" => true, "status" => swarm.status)
-end
-
-"""
-    getSwarmStatus(id::String)
-Get the current status and basic metrics of a swarm.
-"""
-function getSwarmStatus(id::String)::Dict
-    swarm = getSwarm(id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $id not found")
-    end
-
-    # TODO: Add more dynamic metrics if available from the running task/algorithm state
-    status_data = Dict(
-        "id" => swarm.id,
-        "name" => swarm.name,
-        "status" => string(swarm.status),
-        "algorithm" => string(typeof(swarm.algorithm)),
-        "agent_count" => length(swarm.agent_ids),
-        "current_iteration" => swarm.current_iteration,
-        "last_updated" => string(swarm.updated)
-        # Add best_known_solution if needed (might be large)
-    )
-    return Dict("success" => true, "data" => status_data)
-end
-
-# --- Shared State Management ---
-
-"""
-    getSharedState(swarm_id::String, key::String, default=nothing)
-
-Get a value from the swarm's shared state.
-
-# Arguments
-- `swarm_id::String`: Swarm ID
-- `key::String`: Key to retrieve
-- `default`: Default value if key not found
-
-# Returns
-- Value associated with key, or default if not found
-"""
-function getSharedState(swarm_id::String, key::String, default=nothing)
-    swarm = getSwarm(swarm_id)
-    swarm === nothing && return default
-    get(swarm.shared_state, key, default)
-end
-
-"""
-    updateSharedState!(swarm_id::String, key::String, value)
-
-Update a value in the swarm's shared state.
-
-# Arguments
-- `swarm_id::String`: Swarm ID
-- `key::String`: Key to update
-- `value`: New value
-
-# Returns
-- `Bool`: true if successful, false otherwise
-"""
-function updateSharedState!(swarm_id::String, key::String, value)::Dict
-    swarm = getSwarm(swarm_id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $swarm_id not found")
-    end
-
-    # Update the state
-    swarm.shared_state[key] = value
-    swarm.updated = now()
-
-    # Optionally broadcast state change to agents
+function _swarm_algorithm_loop(swarm::Swarm)
+    @info "Algorithm loop started for swarm $(swarm.name) (ID: $(swarm.id)) using $(swarm.config.algorithm_type)."
+    swarm.algorithm_instance = _instantiate_algorithm(swarm)
+    isnothing(swarm.algorithm_instance) && (swarm.status = SWARM_ERROR; swarm.updated_at = now(UTC); @error "Failed to init algo for swarm $(swarm.id)"; _save_swarms_state(); return)
+    
     try
-        Agents.Swarm.publish_to_swarm(swarm_id, "swarm.$(swarm_id).state_change",
-                                    Dict("key" => key, "value" => value))
-    catch e
-        @warn "Failed to broadcast state change" exception=(e, catch_backtrace())
-    end
-
-    _save_swarms_state()
-    return Dict("success" => true, "key" => key, "value" => value)
-end
-
-# --- Agent Membership Management ---
-
-"""
-    addAgentToSwarm(swarm_id::String, agent_id::String)
-
-Add an agent to a swarm.
-
-# Arguments
-- `swarm_id::String`: Swarm ID
-- `agent_id::String`: Agent ID to add
-
-# Returns
-- `Dict`: Result with success status
-"""
-function addAgentToSwarm(swarm_id::String, agent_id::String)::Dict
-    swarm = getSwarm(swarm_id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $swarm_id not found")
-    end
-
-    # Check if agent exists
-    agent = nothing
-    try
-        agent = Agents.getAgent(agent_id)
-    catch e
-        @warn "Error checking agent existence" exception=(e, catch_backtrace())
-    end
-
-    if agent === nothing
-        return Dict("success" => false, "error" => "Agent $agent_id not found or not accessible")
-    end
-
-    # Check if agent is already in swarm
-    if agent_id in swarm.agent_ids
-        return Dict("success" => true, "message" => "Agent already in swarm")
-    end
-
-    # Add agent to swarm
-    push!(swarm.agent_ids, agent_id)
-    swarm.updated = now()
-
-    # Subscribe agent to swarm topics
-    try
-        Agents.Swarm.subscribe_swarm!(agent_id, "swarm.$(swarm_id).broadcast")
-        Agents.Swarm.subscribe_swarm!(agent_id, "swarm.$(swarm_id).state_change")
-        Agents.Swarm.subscribe_swarm!(agent_id, "swarm.$(swarm_id).task_available")
-    catch e
-        @warn "Failed to subscribe agent to swarm topics" exception=(e, catch_backtrace())
-    end
-
-    # Notify other agents about new member
-    try
-        Agents.Swarm.publish_to_swarm(swarm_id, "swarm.$(swarm_id).member_joined",
-                                    Dict("agent_id" => agent_id))
-    catch e
-        @warn "Failed to broadcast member joined event" exception=(e, catch_backtrace())
-    end
-
-    _save_swarms_state()
-    return Dict("success" => true, "message" => "Agent added to swarm")
-end
-
-"""
-    removeAgentFromSwarm(swarm_id::String, agent_id::String)
-
-Remove an agent from a swarm.
-
-# Arguments
-- `swarm_id::String`: Swarm ID
-- `agent_id::String`: Agent ID to remove
-
-# Returns
-- `Dict`: Result with success status
-"""
-function removeAgentFromSwarm(swarm_id::String, agent_id::String)::Dict
-    swarm = getSwarm(swarm_id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $swarm_id not found")
-    end
-
-    # Check if agent is in swarm
-    if !(agent_id in swarm.agent_ids)
-        return Dict("success" => true, "message" => "Agent not in swarm")
-    end
-
-    # Remove agent from swarm
-    filter!(id -> id != agent_id, swarm.agent_ids)
-    swarm.updated = now()
-
-    # Unsubscribe agent from swarm topics
-    try
-        Agents.Swarm.unsubscribe_swarm!(agent_id, "swarm.$(swarm_id).broadcast")
-        Agents.Swarm.unsubscribe_swarm!(agent_id, "swarm.$(swarm_id).state_change")
-        Agents.Swarm.unsubscribe_swarm!(agent_id, "swarm.$(swarm_id).task_available")
-    catch e
-        @warn "Failed to unsubscribe agent from swarm topics" exception=(e, catch_backtrace())
-    end
-
-    # Notify other agents about member leaving
-    try
-        Agents.Swarm.publish_to_swarm(swarm_id, "swarm.$(swarm_id).member_left",
-                                    Dict("agent_id" => agent_id))
-    catch e
-        @warn "Failed to broadcast member left event" exception=(e, catch_backtrace())
-    end
-
-    # If this was the leader, trigger re-election
-    leader_id = getSharedState(swarm_id, "leader_id")
-    if leader_id == agent_id
-        updateSharedState!(swarm_id, "leader_id", nothing)
-        try
-            Agents.Swarm.publish_to_swarm(swarm_id, "swarm.$(swarm_id).leader_needed", Dict())
-        catch e
-            @warn "Failed to broadcast leader needed event" exception=(e, catch_backtrace())
-        end
-    end
-
-    _save_swarms_state()
-    return Dict("success" => true, "message" => "Agent removed from swarm")
-end
-
-# --- Coordination Protocols ---
-
-"""
-    electLeader(swarm_id::String, criteria::Function=nothing)
-
-Elect a leader for the swarm based on the provided criteria function.
-If no criteria function is provided, the first agent is selected as leader.
-
-# Arguments
-- `swarm_id::String`: Swarm ID
-- `criteria::Function`: Function that takes an agent and returns a score (higher is better)
-
-# Returns
-- `Dict`: Result with success status and leader ID
-"""
-function electLeader(swarm_id::String, criteria::Function=nothing)::Dict
-    swarm = getSwarm(swarm_id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $swarm_id not found")
-    end
-
-    if isempty(swarm.agent_ids)
-        return Dict("success" => false, "error" => "No agents in swarm")
-    end
-
-    # Get all agent details
-    agent_details = []
-    for agent_id in swarm.agent_ids
-        agent = nothing
-        try
-            agent = Agents.getAgent(agent_id)
-        catch e
-            @warn "Error getting agent $agent_id" exception=(e, catch_backtrace())
-            continue
-        end
-        agent === nothing && continue
-        push!(agent_details, (id=agent_id, agent=agent))
-    end
-
-    # Apply criteria function to select leader
-    if isempty(agent_details)
-        return Dict("success" => false, "error" => "No valid agents found in swarm")
-    end
-
-    leader_id = if criteria === nothing
-        # Default: select first agent
-        agent_details[1].id
-    else
-        # Apply criteria function
-        try
-            best_idx = argmax(i -> criteria(agent_details[i].agent), 1:length(agent_details))
-            agent_details[best_idx].id
-        catch e
-            @warn "Error applying leader criteria function" exception=(e, catch_backtrace())
-            # Fallback to first agent
-            agent_details[1].id
-        end
-    end
-
-    # Update swarm state and notify agents
-    result = updateSharedState!(swarm_id, "leader_id", leader_id)
-    if !result["success"]
-        return Dict("success" => false, "error" => "Failed to update leader in shared state")
-    end
-
-    # Broadcast leader election result
-    try
-        Agents.Swarm.publish_to_swarm(swarm_id, "swarm.$(swarm_id).leader_elected",
-                                    Dict("leader_id" => leader_id))
-    catch e
-        @warn "Failed to broadcast leader election result" exception=(e, catch_backtrace())
-    end
-
-    return Dict("success" => true, "leader_id" => leader_id)
-end
-
-# --- Task Allocation ---
-
-"""
-    allocateTask(swarm_id::String, task::Dict)
-
-Allocate a task to the swarm.
-
-# Arguments
-- `swarm_id::String`: Swarm ID
-- `task::Dict`: Task data
-
-# Returns
-- `Dict`: Result with success status and task ID
-"""
-function allocateTask(swarm_id::String, task::Dict)::Dict
-    swarm = getSwarm(swarm_id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $swarm_id not found")
-    end
-
-    if isempty(swarm.agent_ids)
-        return Dict("success" => false, "error" => "No agents in swarm")
-    end
-
-    # Generate a unique task ID
-    task_id = string(uuid4())
-    task_data = merge(Dict("task_id" => task_id, "created_at" => now()), task)
-
-    # Store task in swarm state
-    swarm.pending_tasks[task_id] = task_data
-    swarm.updated = now()
-
-    # Publish task to swarm
-    try
-        Agents.Swarm.publish_to_swarm(swarm_id, "swarm.$(swarm_id).task_available",
-                                    Dict("task_id" => task_id, "task" => task_data))
-    catch e
-        @warn "Failed to broadcast task availability" exception=(e, catch_backtrace())
-    end
-
-    _save_swarms_state()
-    return Dict("success" => true, "task_id" => task_id)
-end
-
-"""
-    claimTask(swarm_id::String, task_id::String, agent_id::String)
-
-Claim a task for an agent.
-
-# Arguments
-- `swarm_id::String`: Swarm ID
-- `task_id::String`: Task ID
-- `agent_id::String`: Agent ID
-
-# Returns
-- `Dict`: Result with success status and task data
-"""
-function claimTask(swarm_id::String, task_id::String, agent_id::String)::Dict
-    swarm = getSwarm(swarm_id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $swarm_id not found")
-    end
-
-    # Check if agent is in swarm
-    if !(agent_id in swarm.agent_ids)
-        return Dict("success" => false, "error" => "Agent not in swarm")
-    end
-
-    # Check if task exists and is pending
-    if !haskey(swarm.pending_tasks, task_id)
-        return Dict("success" => false, "error" => "Task not found or already claimed")
-    end
-
-    # Claim task
-    task = swarm.pending_tasks[task_id]
-    delete!(swarm.pending_tasks, task_id)
-
-    # Add to assigned tasks
-    task = merge(task, Dict("assigned_to" => agent_id, "assigned_at" => now()))
-    swarm.assigned_tasks[task_id] = task
-    swarm.updated = now()
-
-    # Notify swarm
-    try
-        Agents.Swarm.publish_to_swarm(swarm_id, "swarm.$(swarm_id).task_claimed",
-                                    Dict("task_id" => task_id, "agent_id" => agent_id))
-    catch e
-        @warn "Failed to broadcast task claim" exception=(e, catch_backtrace())
-    end
-
-    _save_swarms_state()
-    return Dict("success" => true, "task" => task)
-end
-
-"""
-    completeTask(swarm_id::String, task_id::String, agent_id::String, result::Dict)
-
-Mark a task as completed.
-
-# Arguments
-- `swarm_id::String`: Swarm ID
-- `task_id::String`: Task ID
-- `agent_id::String`: Agent ID
-- `result::Dict`: Task result data
-
-# Returns
-- `Dict`: Result with success status
-"""
-function completeTask(swarm_id::String, task_id::String, agent_id::String, result::Dict)::Dict
-    swarm = getSwarm(swarm_id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $swarm_id not found")
-    end
-
-    # Check if task exists and is assigned to this agent
-    if !haskey(swarm.assigned_tasks, task_id)
-        return Dict("success" => false, "error" => "Task not found or not assigned")
-    end
-
-    task = swarm.assigned_tasks[task_id]
-    if get(task, "assigned_to", "") != agent_id
-        return Dict("success" => false, "error" => "Task not assigned to this agent")
-    end
-
-    # Move task to completed
-    delete!(swarm.assigned_tasks, task_id)
-    task = merge(task, Dict("completed_at" => now(), "result" => result))
-    swarm.completed_tasks[task_id] = task
-    swarm.updated = now()
-
-    # Notify swarm
-    try
-        Agents.Swarm.publish_to_swarm(swarm_id, "swarm.$(swarm_id).task_completed",
-                                    Dict("task_id" => task_id, "agent_id" => agent_id, "result" => result))
-    catch e
-        @warn "Failed to broadcast task completion" exception=(e, catch_backtrace())
-    end
-
-    _save_swarms_state()
-    return Dict("success" => true, "task" => task)
-end
-
-# --- Swarm Monitoring ---
-
-"""
-    getSwarmMetrics(swarm_id::String)
-
-Get comprehensive metrics for a swarm.
-
-# Arguments
-- `swarm_id::String`: Swarm ID
-
-# Returns
-- `Dict`: Metrics data
-"""
-function getSwarmMetrics(swarm_id::String)::Dict
-    swarm = getSwarm(swarm_id)
-    if swarm === nothing
-        return Dict("success" => false, "error" => "Swarm $swarm_id not found")
-    end
-
-    # Collect basic metrics
-    metrics = Dict(
-        "agent_count" => length(swarm.agent_ids),
-        "uptime" => Dates.value(now() - swarm.created) / 1000,  # seconds
-        "status" => string(swarm.status),
-        "iterations" => swarm.current_iteration,
-        "task_stats" => Dict(
-            "pending" => length(swarm.pending_tasks),
-            "assigned" => length(swarm.assigned_tasks),
-            "completed" => length(swarm.completed_tasks)
-        )
-    )
-
-    # Add algorithm-specific metrics
-    if swarm.status == RUNNING
-        # These would depend on the specific algorithm implementation
-        if isa(swarm.algorithm, SwarmPSO)
-            metrics["convergence"] = getSharedState(swarm_id, "convergence", 0.0)
-            metrics["global_best_fitness"] = getSharedState(swarm_id, "global_best_fitness", Inf)
-        elseif isa(swarm.algorithm, SwarmGA)
-            metrics["best_fitness"] = getSharedState(swarm_id, "best_fitness", Inf)
-            metrics["population_diversity"] = getSharedState(swarm_id, "diversity", 0.0)
-        end
-        # Add more algorithm-specific metrics as needed
-    end
-
-    # Add agent performance metrics
-    active_agents = 0
-    for agent_id in swarm.agent_ids
-        agent = nothing
-        try
-            agent = Agents.getAgent(agent_id)
-            if agent !== nothing && get(agent, :status, "") == "active"  # Assuming agent has a status field
-                active_agents += 1
-            end
-        catch e
-            @warn "Error getting agent status" exception=(e, catch_backtrace())
-        end
-    end
-    metrics["active_agents"] = active_agents
-
-    return Dict("success" => true, "data" => metrics)
-end
-
-# --- Include Additional Modules ---
-include("visualization.jl")
-include("fault_tolerance.jl")
-include("communication.jl")
-include("security.jl")
-include("testing.jl")
-include("performance.jl")
-include("cli_integration.jl")
-include("algorithms/de.jl")
-include("algorithms/pso.jl")
-include("algorithms/gwo.jl")
-include("algorithms/aco.jl")
-include("algorithms/ga.jl")
-include("algorithms/woa.jl")
-include("algorithms/DEPSO.jl")
-include("algorithms/MultiObjectiveDEPSO.jl")
-include("algorithms/ConstrainedDEPSO.jl")
-
-# Re-export modules
-using .SwarmVisualization
-using .SwarmFaultTolerance
-using .SwarmCommunication
-using .SwarmSecurity
-using .SwarmTesting
-using .SwarmPerformance
-using .SwarmCLIIntegration
-using .DE
-using .PSO
-using .GWO
-using .ACO
-using .GA
-using .WOA
-using .DEPSO
-using .MultiObjectiveDEPSO
-using .ConstrainedDEPSO
-
-# --- Algorithm Functions ---
-
-# list_algorithms function
-function list_algorithms()
-    try
-        # Return the list of available algorithms with real implementations
-        algorithms = [
-            Dict(
-                "id" => "pso",
-                "name" => "Particle Swarm Optimization",
-                "description" => "A computational method that optimizes a problem by iteratively trying to improve a candidate solution with regard to a given measure of quality.",
-                "type" => "swarm",
-                "parameters" => [
-                    Dict("name" => "population_size", "type" => "number", "default" => 30, "description" => "Number of particles"),
-                    Dict("name" => "max_iterations", "type" => "number", "default" => 100, "description" => "Maximum number of iterations"),
-                    Dict("name" => "c1", "type" => "number", "default" => 2.0, "description" => "Cognitive parameter"),
-                    Dict("name" => "c2", "type" => "number", "default" => 2.0, "description" => "Social parameter"),
-                    Dict("name" => "w", "type" => "number", "default" => 0.7, "description" => "Inertia weight")
-                ]
-            ),
-            Dict(
-                "id" => "de",
-                "name" => "Differential Evolution",
-                "description" => "A stochastic population-based method that is useful for global optimization problems.",
-                "type" => "evolutionary",
-                "parameters" => [
-                    Dict("name" => "population_size", "type" => "number", "default" => 50, "description" => "Population size"),
-                    Dict("name" => "max_iterations", "type" => "number", "default" => 100, "description" => "Maximum number of iterations"),
-                    Dict("name" => "crossover_rate", "type" => "number", "default" => 0.7, "description" => "Crossover rate"),
-                    Dict("name" => "mutation_factor", "type" => "number", "default" => 0.5, "description" => "Mutation factor")
-                ]
-            ),
-            Dict(
-                "id" => "gwo",
-                "name" => "Grey Wolf Optimizer",
-                "description" => "A meta-heuristic algorithm inspired by the leadership hierarchy and hunting mechanism of grey wolves.",
-                "type" => "swarm",
-                "parameters" => [
-                    Dict("name" => "population_size", "type" => "number", "default" => 30, "description" => "Number of wolves"),
-                    Dict("name" => "max_iterations", "type" => "number", "default" => 100, "description" => "Maximum number of iterations")
-                ]
-            ),
-            Dict(
-                "id" => "aco",
-                "name" => "Ant Colony Optimization",
-                "description" => "A probabilistic technique for solving computational problems which can be reduced to finding good paths through graphs.",
-                "type" => "swarm",
-                "parameters" => [
-                    Dict("name" => "population_size", "type" => "number", "default" => 30, "description" => "Number of ants"),
-                    Dict("name" => "max_iterations", "type" => "number", "default" => 100, "description" => "Maximum number of iterations"),
-                    Dict("name" => "alpha", "type" => "number", "default" => 1.0, "description" => "Pheromone importance"),
-                    Dict("name" => "beta", "type" => "number", "default" => 2.0, "description" => "Heuristic importance"),
-                    Dict("name" => "evaporation_rate", "type" => "number", "default" => 0.1, "description" => "Pheromone evaporation rate")
-                ]
-            ),
-            Dict(
-                "id" => "ga",
-                "name" => "Genetic Algorithm",
-                "description" => "A search heuristic that is inspired by Charles Darwin's theory of natural evolution.",
-                "type" => "evolutionary",
-                "parameters" => [
-                    Dict("name" => "population_size", "type" => "number", "default" => 50, "description" => "Population size"),
-                    Dict("name" => "max_iterations", "type" => "number", "default" => 100, "description" => "Maximum number of iterations"),
-                    Dict("name" => "crossover_rate", "type" => "number", "default" => 0.8, "description" => "Crossover rate"),
-                    Dict("name" => "mutation_rate", "type" => "number", "default" => 0.1, "description" => "Mutation rate")
-                ]
-            ),
-            Dict(
-                "id" => "woa",
-                "name" => "Whale Optimization Algorithm",
-                "description" => "A nature-inspired meta-heuristic optimization algorithm which mimics the hunting behavior of humpback whales.",
-                "type" => "swarm",
-                "parameters" => [
-                    Dict("name" => "population_size", "type" => "number", "default" => 30, "description" => "Number of whales"),
-                    Dict("name" => "max_iterations", "type" => "number", "default" => 100, "description" => "Maximum number of iterations"),
-                    Dict("name" => "b", "type" => "number", "default" => 1.0, "description" => "Spiral constant")
-                ]
-            ),
-            Dict(
-                "id" => "depso",
-                "name" => "Differential Evolution Particle Swarm Optimization",
-                "description" => "A hybrid algorithm that combines Differential Evolution and Particle Swarm Optimization.",
-                "type" => "hybrid",
-                "parameters" => [
-                    Dict("name" => "population_size", "type" => "number", "default" => 40, "description" => "Population size"),
-                    Dict("name" => "max_iterations", "type" => "number", "default" => 100, "description" => "Maximum number of iterations"),
-                    Dict("name" => "c1", "type" => "number", "default" => 1.5, "description" => "Cognitive parameter"),
-                    Dict("name" => "c2", "type" => "number", "default" => 1.5, "description" => "Social parameter"),
-                    Dict("name" => "w", "type" => "number", "default" => 0.7, "description" => "Inertia weight"),
-                    Dict("name" => "crossover_rate", "type" => "number", "default" => 0.7, "description" => "Crossover rate"),
-                    Dict("name" => "mutation_factor", "type" => "number", "default" => 0.5, "description" => "Mutation factor")
-                ]
+        # Initialize the algorithm (includes initial local fitness evaluations)
+        SwarmBase.initialize!(swarm.algorithm_instance, swarm.config.problem_definition, swarm.agents, swarm.config.algorithm_params)
+        @info "Swarm $(swarm.id): Algorithm initialized. Initial global best fitness: $(isnothing(swarm.algorithm_instance.global_best_fitness) ? "N/A" : swarm.algorithm_instance.global_best_fitness)"
+        
+        # Update swarm's record of best solution from initialization
+        if hasproperty(swarm.algorithm_instance, :global_best_position) && hasproperty(swarm.algorithm_instance, :global_best_fitness)
+             # Assuming is_feasible is true for initial solutions, metadata can be empty
+            swarm.best_solution_found = SwarmSolution(
+                copy(swarm.algorithm_instance.global_best_position),
+                swarm.algorithm_instance.global_best_fitness,
+                true, # is_feasible
+                Dict{String,Any}() # metadata
             )
-        ]
-        return Dict("success" => true, "data" => Dict("algorithms" => algorithms))
+        end
+
+        max_iter = swarm.config.max_iterations
+        
+        # Get initial set of positions to evaluate (these are the positions after initialization)
+        # This function needs to be part of SwarmBase and implemented by each algorithm type.
+        # e.g., for PSO, it returns all particle.position
+        current_positions_to_evaluate = SwarmBase.get_all_particle_positions(swarm.algorithm_instance)
+
+        for iter in 1:max_iter
+            if swarm.status != SWARM_RUNNING 
+                @info "Swarm $(swarm.id) stopping: status $(swarm.status)."
+                break 
+            end
+            swarm.current_iteration = iter
+            @debug "Swarm $(swarm.id) iter $iter/$max_iter"
+
+            # (A) Evaluate Fitnesses for current_positions_to_evaluate
+            # This is where real agent distribution would happen.
+            # For now, _distribute_and_collect_evaluations simulates it locally.
+            @debug "Swarm $(swarm.id) iter $iter: Evaluating $(length(current_positions_to_evaluate)) current population members."
+            evaluated_fitnesses_current_pop = _distribute_and_collect_evaluations(swarm, current_positions_to_evaluate)
+            if length(evaluated_fitnesses_current_pop) != length(current_positions_to_evaluate)
+                @error "Swarm $(swarm.id) iter $iter: Mismatch in number of evaluated fitnesses for current pop. Halting."
+                swarm.status = SWARM_ERROR; break
+            end
+            @debug "Swarm $(swarm.id) iter $iter: Fitnesses for current pop collected."
+
+            # (B) Update Algorithm State with new fitnesses for the current population
+            # For DE/GA, this updates the fitness of the main population. For PSO, it updates particle fitness & pbest/gbest.
+            SwarmBase.update_fitness_and_bests!(swarm.algorithm_instance, swarm.config.problem_definition, evaluated_fitnesses_current_pop)
+            
+            # (D) Algorithm Advances (Generates Next Candidate Positions/Trial Vectors)
+            # For DE/GA, this generates trial vectors. For PSO, this updates velocities and generates new particle positions.
+            @debug "Swarm $(swarm.id) iter $iter: Advancing algorithm to generate next candidates."
+            next_candidate_positions = SwarmBase.step!( # For DE, this returns trial vectors; for PSO, new particle positions
+                swarm.algorithm_instance, swarm.config.problem_definition, swarm.agents, 
+                iter, swarm.shared_data, swarm.config.algorithm_params
+            )
+            if isempty(next_candidate_positions)
+                 @warn "Swarm $(swarm.id) iter $iter: Algorithm step returned no new candidate positions to evaluate."
+            end
+
+            # --- Algorithm-Specific Post-Step Processing ---
+            if swarm.config.algorithm_type == "DE" && !isempty(next_candidate_positions)
+                # For DE, `next_candidate_positions` are trial vectors. They need to be evaluated.
+                @debug "Swarm $(swarm.id) iter $iter (DE): Evaluating $(length(next_candidate_positions)) trial vectors."
+                evaluated_trial_fitnesses = _distribute_and_collect_evaluations(swarm, next_candidate_positions)
+                if length(evaluated_trial_fitnesses) != length(next_candidate_positions)
+                    @error "Swarm $(swarm.id) iter $iter (DE): Mismatch in trial fitnesses. Halting."
+                    swarm.status = SWARM_ERROR; break
+                end
+                # Then, perform selection to update the main population
+                SwarmBase.select_next_generation!(swarm.algorithm_instance, swarm.config.problem_definition, next_candidate_positions, evaluated_trial_fitnesses)
+                # After selection, the `current_positions_to_evaluate` for the *next* iteration will be the new main population.
+                current_positions_to_evaluate = SwarmBase.get_all_particle_positions(swarm.algorithm_instance) # Get updated main population
+            elseif swarm.config.algorithm_type == "GA" && !isempty(next_candidate_positions)
+                # For GA, `next_candidate_positions` are offspring genes. They need to be evaluated.
+                @debug "Swarm $(swarm.id) iter $iter (GA): Evaluating $(length(next_candidate_positions)) offspring."
+                evaluated_offspring_fitnesses = _distribute_and_collect_evaluations(swarm, next_candidate_positions)
+                if length(evaluated_offspring_fitnesses) != length(next_candidate_positions)
+                    @error "Swarm $(swarm.id) iter $iter (GA): Mismatch in offspring fitnesses. Halting."
+                    swarm.status = SWARM_ERROR; break
+                end
+                # Then, form the next generation using elites and these evaluated offspring
+                SwarmBase.select_next_generation!(swarm.algorithm_instance, swarm.config.problem_definition, next_candidate_positions, evaluated_offspring_fitnesses)
+                # The `current_positions_to_evaluate` for the *next* iteration will be the new main population.
+                # (GA's `update_fitness_and_bests!` is mainly for the initial population's fitness values if needed,
+                #  or if the main population itself is re-evaluated, which is not typical for this generational GA flow).
+                current_positions_to_evaluate = SwarmBase.get_all_particle_positions(swarm.algorithm_instance) # Get new main population for next iter
+            else # For PSO and other single-stage evaluation algorithms (or if GA step returned no candidates)
+                # `next_candidate_positions` are the new positions for the next iteration's evaluation.
+                current_positions_to_evaluate = next_candidate_positions
+            end
+            
+            # (E) Update Swarm's Best Solution Record from algorithm's internal global best
+            # This should reflect the state *after* all evaluations and selections for the current iteration are done.
+            if hasproperty(swarm.algorithm_instance, :global_best_position) && hasproperty(swarm.algorithm_instance, :global_best_fitness)
+                algo_global_best_fitness = swarm.algorithm_instance.global_best_fitness
+                if isnothing(swarm.best_solution_found) ||
+                   (swarm.config.problem_definition.is_minimization && algo_global_best_fitness < swarm.best_solution_found.fitness) ||
+                   (!swarm.config.problem_definition.is_minimization && algo_global_best_fitness > swarm.best_solution_found.fitness)
+                    
+                    swarm.best_solution_found = SwarmSolution(
+                        copy(swarm.algorithm_instance.global_best_position),
+                        algo_global_best_fitness,
+                        true, # Assuming feasibility
+                        Dict("updated_at_iter" => iter)
+                    )
+                    @info "Swarm $(swarm.id) new global best at iter $iter: Fitness=$(swarm.best_solution_found.fitness)"
+                    _save_swarms_state() 
+                end
+            else
+                @warn "Swarm $(swarm.id) iter $iter: Algorithm instance missing global_best_position/fitness."
+            end
+
+            # (C & F) Check for Termination (combined)
+            if SwarmBase.should_terminate(swarm.algorithm_instance, iter, max_iter, swarm.best_solution_found, swarm.config.target_fitness, swarm.config.problem_definition)
+                @info "Swarm $(swarm.id) met termination criteria at iter $iter."
+                swarm.status = SWARM_COMPLETED; break 
+            end
+            
+            sleep(get(swarm.config.algorithm_params, "iteration_delay_seconds", 0.01)) 
+        end # End of iteration loop
+
+        if swarm.status == SWARM_RUNNING # If loop finished due to max_iter without other termination
+            swarm.status = SWARM_COMPLETED
+            @info "Swarm $(swarm.id) completed max iterations."
+        end
+
     catch e
-        @error "Error listing algorithms" exception=(e, catch_backtrace())
-        return Dict("success" => false, "error" => "Error listing algorithms: $(string(e))")
+        if isa(e, InterruptException) @info "Swarm $(swarm.id) loop interrupted."; swarm.status = SWARM_STOPPED
+        else @error "Error in swarm $(swarm.id) loop!" error=e stack=catch_backtrace(); swarm.status = SWARM_ERROR end
+    finally
+        swarm.updated_at = now(UTC); swarm.swarm_task_handle = nothing # Clear task handle
+        @info "Swarm $(swarm.id) algorithm loop finished. Final status: $(swarm.status)."
+        _save_swarms_state() # Save final state
     end
 end
 
 
-# --- Initialization ---
-function __init__()
-    # Load existing swarms when the module is first loaded
-    _load_swarms_state()
+"""
+_distribute_and_collect_evaluations(swarm::Swarm, positions_to_evaluate::Vector{Vector{Float64}})::Vector{Float64}
 
-    # Optional: Automatically restart swarms that were previously running?
-    # lock(SWARMS_LOCK) do
-    #     for (id, swarm) in SWARMS
-    #         if swarm.status == RUNNING
-    #             @info "Attempting auto-restart of swarm $id"
-    #             startSwarm(id) # Be careful about potential infinite loops if start fails
-    #         end
+Handles distributing candidate solutions to agents for fitness evaluation and collecting results.
+This version attempts to use `Agents.executeAgentTask` and polls for results.
+"""
+function _distribute_and_collect_evaluations(swarm::Swarm, positions_to_evaluate::Vector{Vector{Float64}})::Vector{Float64}
+    num_positions = length(positions_to_evaluate)
+    evaluated_fitnesses = Vector{Float64}(undef, num_positions)
+    fill!(evaluated_fitnesses, swarm.config.problem_definition.is_minimization ? Inf : -Inf) # Default to worst fitness
+
+    if num_positions == 0
+        return evaluated_fitnesses
+    end
+
+    # Get registered name of the objective function.
+    # string(swarm.config.problem_definition.objective_function) might give "anonymous" if it's a lambda.
+    # We need a reliable way to get the registered name.
+    # Assuming problem_definition stores the name, or we find it by matching the function object.
+    # For now, let's assume objective_function_name is correctly resolvable by agents.
+    # This was handled in _serialize_optimization_problem and _deserialize_optimization_problem.
+    # The SwarmConfig.problem_definition.objective_function is the actual function object.
+    # We need its registered string name.
+    
+    # Find the registered name for the objective function
+    obj_func_callable = swarm.config.problem_definition.objective_function
+    objective_func_name_str = "unknown_objective_function" # Default
+    for (name, func) in OBJECTIVE_FUNCTION_REGISTRY
+        if func === obj_func_callable
+            objective_func_name_str = name
+            break
+        end
+    end
+    if objective_func_name_str == "unknown_objective_function"
+        # This should not happen if objective functions are always from the registry.
+        # If it's a custom lambda not from registry, it cannot be called by remote agent by name.
+        @error "Swarm $(swarm.id): Objective function is not a registered function. Cannot use networked backend. Falling back."
+        # Fallback to local evaluation or agent polling
+    end
+
+
+    # --- Networked Backend Logic (e.g., Redis) ---
+    swarm_backend_type = get_config("swarm.backend", "none") # From agents.Config
+    redis_conn_str = get_config("swarm.connection_string", "") # From agents.Config
+    
+    # TODO: Implement Redis connection caching and management
+    # local redis_conn = nothing
+    # if swarm_backend_type == "redis" && !isempty(redis_conn_str)
+    #     try
+    #         # redis_conn = RedisConnection(redis_conn_str) # Example
+    #         @info "Swarm $(swarm.id): Connected to Redis backend at $redis_conn_str for task distribution."
+    #     catch e
+    #         @error "Swarm $(swarm.id): Failed to connect to Redis backend at $redis_conn_str. Falling back." error=e
+    #         redis_conn = nothing
     #     end
     # end
+
+    # if !isnothing(redis_conn) && objective_func_name_str != "unknown_objective_function"
+    #     @info "Swarm $(swarm.id): Using Redis backend for $(num_positions) evaluations."
+    #     # ... (Implementation for Redis task dispatch and result collection) ...
+    #     # This part is complex and involves:
+    #     # 1. Serializing tasks (position, objective_func_name_str, reply_to_key)
+    #     # 2. LPUSH to a work queue (e.g., "swarm_eval_tasks")
+    #     # 3. For each task, BRPOP on a unique reply_to_key with timeout
+    #     # 4. Deserialize result, handle errors/timeouts
+    #     # This is a placeholder for that logic.
+    #     @warn "Redis-based distributed evaluation for Swarm $(swarm.id) is a STUB/TODO."
+    #     # Fallback to current agent polling if Redis logic is not fully implemented yet.
+    # end
+    # --- Networked Backend Logic (e.g., Redis) ---
+    swarm_backend_type = lowercase(get_config("swarm.backend", "none")) # From agents.Config
+    
+    if swarm_backend_type == "redis" && objective_func_name_str != "unknown_objective_function"
+        redis_conn_str = get_config("swarm.connection_string", "") # From agents.Config
+        if isempty(redis_conn_str)
+            @warn "Swarm $(swarm.id): Redis backend configured but connection string is empty. Falling back."
+        else
+            redis_conn = _get_redis_connection(redis_conn_str)
+            if !isnothing(redis_conn)
+                @info "Swarm $(swarm.id): Using Redis backend at $redis_conn_str for $(num_positions) evaluations."
+                
+                dispatched_redis_tasks = Vector{Tuple{String, String, Int}}() # eval_task_id, reply_to_list, original_pos_idx
+                # Use a general task queue for all swarms, or swarm-specific if preferred
+                task_queue_list_name = get_config("swarm.default_topic_prefix", "juliaos.swarm") * ".evaluation_tasks"
+
+                for i in 1:num_positions
+                    eval_task_id = "eval-" * string(uuid4())
+                    # Unique reply list for each task to ensure result goes to the right place
+                    reply_to_list_name = get_config("swarm.default_topic_prefix", "juliaos.swarm") * ".results:" * eval_task_id 
+                    
+                    task_payload = Dict(
+                        "eval_task_id" => eval_task_id,
+                        "swarm_id" => swarm.id, # For agent logging/context
+                        "position_data" => positions_to_evaluate[i],
+                        "objective_function_name" => objective_func_name_str,
+                        "reply_to_list" => reply_to_list_name
+                    )
+                    json_task = JSON3.write(task_payload)
+                    
+                    try
+                        # This is where the actual Redis.lpush would happen.
+                        # Example: Redis.lpush(redis_conn, task_queue_list_name, json_task)
+                        @debug "Swarm $(swarm.id) [SIMULATED REDIS]: LPUSH task $eval_task_id to $task_queue_list_name" task_data=json_task
+                        # For simulation, we'll assume it's pushed.
+                        push!(dispatched_redis_tasks, (eval_task_id, reply_to_list_name, i))
+                    catch e_redis_push
+                        @error "Swarm $(swarm.id): Failed to LPUSH task to Redis queue $task_queue_list_name" exception=e_redis_push
+                        # Penalty fitness already set for this position, will not be collected via Redis
+                    end
+                end
+
+                # --- Collect Results from Redis (Blocking with Timeout) ---
+                collection_timeout_seconds = get(swarm.config.algorithm_params, "evaluation_timeout_seconds", 60.0) 
+                
+                num_collected_redis = 0
+                for (eval_task_id, reply_list, original_pos_idx) in dispatched_redis_tasks
+                    @debug "Swarm $(swarm.id) [SIMULATED REDIS]: Waiting for result on Redis list $reply_list for task $eval_task_id (original index $original_pos_idx)"
+                    try
+                        task_timeout_per_item = max(1, floor(Int, collection_timeout_seconds / length(dispatched_redis_tasks)))
+                        
+                        # Example: result_tuple = Redis.brpop(redis_conn, [reply_list], task_timeout_per_item) 
+                        # --- SIMULATION of BRPOP and agent processing ---
+                        # In a real system, an external agent worker would:
+                        # 1. BRPOP from `task_queue_list_name`
+                        # 2. Process it (call evaluate_fitness_ability)
+                        # 3. LPUSH result to `reply_list`
+                        # Here, we simulate this by directly evaluating and "pretending" it came from Redis.
+                        @warn "Swarm $(swarm.id) [SIMULATED REDIS]: Simulating agent processing for task $eval_task_id. This should be done by external agent worker."
+                        simulated_fitness_val = swarm.config.problem_definition.objective_function(positions_to_evaluate[original_pos_idx])
+                        simulated_json_result = JSON3.write(Dict("eval_task_id"=>eval_task_id, "fitness"=>simulated_fitness_val, "worker_id"=>"simulated_worker"))
+                        result_tuple = (reply_list, simulated_json_result) # Simulate a successful BRPOP
+                        # --- END SIMULATION ---
+
+                        if !isnothing(result_tuple) && length(result_tuple) == 2
+                            _, json_result = result_tuple
+                            result_payload = JSON3.read(json_result)
+                            fitness_val = get(result_payload, "fitness", nothing)
+                            
+                            if !isnothing(fitness_val) && isa(fitness_val, Real)
+                                evaluated_fitnesses[original_pos_idx] = Float64(fitness_val)
+                                num_collected_redis += 1
+                            else
+                                @warn "Swarm $(swarm.id): Invalid fitness value in Redis result for task $eval_task_id." result=result_payload
+                            end
+                        else
+                            @warn "Swarm $(swarm.id): Timeout or error receiving result from Redis for task $eval_task_id on list $reply_list."
+                        end
+                    catch e_redis_pop
+                        @error "Swarm $(swarm.id): Error during BRPOP from Redis list $reply_list for task $eval_task_id" exception=e_redis_pop
+                    end
+                end
+                @info "Swarm $(swarm.id): Collected $num_collected_redis/$(length(dispatched_redis_tasks)) results via Redis (simulation)."
+                return evaluated_fitnesses # Return results collected via Redis
+            end
+        end
+    end
+    # --- End Redis Backend Logic ---
+
+    # Fallback to agent polling or local evaluation if Redis not used or failed
+    @debug "Swarm $(swarm.id): Falling back from Redis to local agent polling or direct local evaluation."
+    if isempty(swarm.agents)
+        @warn "Swarm $(swarm.id) has no agents (and Redis backend failed/disabled). Performing direct local evaluation for $(num_positions) positions."
+        objective_func_actual = swarm.config.problem_definition.objective_function
+        for i in 1:num_positions
+            try
+                evaluated_fitnesses[i] = objective_func_actual(positions_to_evaluate[i])
+            catch ex
+                @error "Local eval error for swarm $(swarm.id), pos $i" exception=(ex, catch_backtrace())
+                # Penalty already set
+            end
+        end
+        return evaluated_fitnesses
+    end
+
+    @info "Distributing $(num_positions) evaluations to $(length(swarm.agents)) agents for swarm $(swarm.id) via HTTP API."
+    
+    # Store futures for asynchronous HTTP calls
+    # Each future will resolve to a Tuple{Int, Union{Float64, Nothing}} (original_pos_idx, fitness_value_or_nothing)
+    evaluation_futures = []
+    agent_idx_round_robin = 1
+    # Define the base URL for the agent API - this should ideally come from config or service discovery
+    # Assuming agents run on the same host/port as the main API for now.
+    # This needs to be configurable if agents are on different hosts/ports.
+    agent_api_base_url = get_config("agent.api_base_url", "http://localhost:8080/api/v1") # Example
+
+    for i in 1:num_positions
+        target_agent_id = swarm.agents[agent_idx_round_robin]
+        agent_idx_round_robin = mod1(agent_idx_round_robin + 1, length(swarm.agents))
+
+        payload = Dict(
+            "objective_function_id" => objective_func_name_str,
+            "candidate_solution" => positions_to_evaluate[i],
+            "problem_context" => Dict{String,Any}() # Add context if needed by obj_fn via agent
+        )
+        json_payload = JSON3.write(payload)
+        request_url = "$agent_api_base_url/agents/$target_agent_id/evaluate_fitness"
+        
+        # Asynchronous HTTP POST request
+        future = @async begin
+            try
+                # Note: HTTP.request is synchronous. For true async, one might use lower-level libraries
+                # or structure this with a pool of workers making HTTP requests.
+                # For simplicity here, @async makes the block run concurrently.
+                # Timeout for the HTTP request itself
+                http_timeout = get(swarm.config.algorithm_params, "http_evaluation_timeout_seconds", 10.0)
+
+                response = HTTP.request("POST", request_url, 
+                                        ["Content-Type" => "application/json"], 
+                                        json_payload; 
+                                        readtimeout=http_timeout, connect_timeout=5) # Added connect_timeout
+                
+                if response.status == 200
+                    response_body = JSON3.read(String(response.body))
+                    fitness_val = get(response_body, "fitness_value", nothing)
+                    if !isnothing(fitness_val) && isa(fitness_val, Real)
+                        return (i, Float64(fitness_val)) # original_pos_idx, fitness
+                    else
+                        @warn "Swarm $(swarm.id): Agent $target_agent_id returned invalid fitness via API for pos $i." response_body=response_body
+                        return (i, nothing)
+                    end
+                else
+                    @warn "Swarm $(swarm.id): Agent $target_agent_id returned error status $(response.status) for fitness eval of pos $i." url=request_url body=String(response.body)
+                    return (i, nothing)
+                end
+            catch e
+                @error "Swarm $(swarm.id): HTTP request error during fitness evaluation for pos $i to agent $target_agent_id." exception=(e,catch_backtrace()) url=request_url
+                return (i, nothing) # original_pos_idx, error indicator
+            end
+        end
+        push!(evaluation_futures, future)
+    end
+
+    # Collect results from futures
+    # This part will block until all async tasks complete or timeout (if futures had timeouts, which @async doesn't directly)
+    # A more robust implementation might use fetch(future) with a global timeout for all evaluations.
+    num_collected_http = 0
+    for future in evaluation_futures
+        try
+            # Wait for each future to complete.
+            # A global timeout for all evaluations might be better than waiting indefinitely for each.
+            # For now, assuming futures complete reasonably.
+            # `fetch` will rethrow errors from the @async block.
+            result_tuple = fetch(future) # This blocks until this specific future is done
+            if !isnothing(result_tuple)
+                original_pos_idx, fitness_value = result_tuple
+                if !isnothing(fitness_value)
+                    evaluated_fitnesses[original_pos_idx] = fitness_value
+                    num_collected_http +=1
+                else
+                    # Error already logged inside @async block, penalty fitness remains
+                end
+            else
+                 # Should not happen if @async block always returns a tuple
+                 @warn "Swarm $(swarm.id): Unexpected null result from evaluation future."
+            end
+        catch e_fetch
+            # Error from fetching the future (e.g., task failed in @async block)
+            # The error was already logged inside the @async block. Penalty fitness remains.
+            @error "Swarm $(swarm.id): Error fetching result from an evaluation future." exception=(e_fetch, catch_backtrace())
+        end
+    end
+    
+    @info "Swarm $(swarm.id): Finished collecting $num_collected_http/$(num_positions) evaluations via HTTP API."
+    return evaluated_fitnesses
+end
+
+
+function startSwarm(id::String)::Bool
+    s=getSwarm(id); isnothing(s) && return false
+    (s.status==SWARM_RUNNING && !isnothing(s.swarm_task_handle) && !istaskdone(s.swarm_task_handle)) && return true
+    s.status==SWARM_ERROR && (@warn "Swarm $id in ERROR state."; return false)
+    # isempty(s.agents) && s.config.algorithm_type != "SingleAgentDebug" && (@warn "Swarm $id has no agents."; return false) # Allow agentless for now
+    s.status = SWARM_RUNNING; s.updated_at = now(UTC); s.current_iteration = 0
+    s.swarm_task_handle = @task _swarm_algorithm_loop(s); schedule(s.swarm_task_handle)
+    @info "Swarm $id started."; _save_swarms_state(); true
+end
+
+function stopSwarm(id::String)::Bool
+    s=getSwarm(id); isnothing(s) && return false
+    s.status != SWARM_RUNNING && return s.status != SWARM_ERROR
+    s.status = SWARM_STOPPED; s.updated_at = now(UTC); @info "Signaled swarm $id to stop."
+    _save_swarms_state(); true
+end
+
+getSwarmStatus(id::String) = (s=getSwarm(id); isnothing(s) ? nothing : Dict("id"=>s.id, "name"=>s.name, "status"=>string(s.status), "algo"=>s.config.algorithm_type, "agents"=>length(s.agents), "iter"=>s.current_iteration, "best_fit"=>isnothing(s.best_solution_found) ? nothing : s.best_solution_found.fitness, "created"=>string(s.created_at), "updated"=>string(s.updated_at)))
+getSharedState(swarm_id::String, key::String, default=nothing) = (s=getSwarm(swarm_id); isnothing(s) ? default : get(s.shared_data, key, default))
+function updateSharedState!(swarm_id::String, key::String, value) s=getSwarm(swarm_id); isnothing(s) ? false : (s.shared_data[key]=value; s.updated_at=now(UTC); true) end
+function electLeader(swarm_id::String; kw...) s=getSwarm(swarm_id); (isnothing(s) || isempty(s.agents)) && return nothing; leader_id=first(s.agents); updateSharedState!(swarm_id, "leader_id", leader_id); @info "Agent $leader_id elected leader for swarm $swarm_id."; leader_id end
+function allocateTask(swarm_id::String, task_details::Dict) s=getSwarm(swarm_id); isnothing(s) && return nothing; task_id="task-"*string(uuid4())[1:8]; task_details["id"]=task_id; task_details["status"]="pending"; push!(s.task_queue,task_details); s.updated_at=now(UTC); @info "Task $task_id allocated to swarm $swarm_id."; task_id end
+claimTask(swarm_id,task_id,agent_id) = (@info "Agent $agent_id claimed task $task_id in swarm $swarm_id (placeholder)."; true) # Placeholder
+completeTask(swarm_id,task_id,agent_id,result) = (@info "Agent $agent_id completed task $task_id in swarm $swarm_id (placeholder)."; true) # Placeholder
+getSwarmMetrics(id) = (s=getSwarmStatus(id); isnothing(s) ? Dict("error"=>"Swarm not found") : Dict("status_summary"=>s, "queue_len"=>length(getSwarm(id).task_queue)))
+
+function __init__()
+    try SWARM_STORE_PATH[]=get_config("storage.swarm_path",DEFAULT_SWARM_STORE_PATH); SWARM_AUTO_PERSIST[]=get_config("storage.auto_persist_swarms",true); _ensure_storage_dir()
+    catch e @warn "Swarms __init__: Error updating config constants." error=e end
+    _register_default_objectives(); _load_swarms_state()
+    @info "Swarms module initialized. $(length(SWARMS_REGISTRY)) swarms loaded. $(length(OBJECTIVE_FUNCTION_REGISTRY)) objectives registered."
 end
 
 end # module Swarms

@@ -1,8 +1,0 @@
-name = "Skills"
-uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-authors = ["JuliaOS Team"]
-version = "0.1.0"
-
-[deps]
-JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
-UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"

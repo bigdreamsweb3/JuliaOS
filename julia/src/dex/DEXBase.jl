@@ -129,7 +129,7 @@ mutable struct DEXOrder
     amount::Float64
     price::Float64
     status::OrderStatus
-    timestamp::Float64
+    timestamp::Float64 # Consider using DateTime for consistency
     tx_hash::String
     metadata::Dict{String, Any}
 end
@@ -161,7 +161,7 @@ mutable struct DEXTrade
     price::Float64
     fee::Float64
     status::TradeStatus
-    timestamp::Float64
+    timestamp::Float64 # Consider using DateTime
     tx_hash::String
     metadata::Dict{String, Any}
 end
@@ -180,40 +180,46 @@ Structure representing the configuration for a DEX.
 - `api_key::String`: API key (if applicable)
 - `private_key::String`: Private key for signing transactions
 - `gas_limit::Int`: Gas limit for transactions
-- `gas_price::Float64`: Gas price in native currency
-- `slippage::Float64`: Maximum slippage percentage
-- `timeout::Int`: Timeout in seconds for API calls
+- `gas_price::Float64`: Gas price in native currency (e.g. Gwei for EVM)
+- `slippage::Float64`: Maximum slippage percentage (e.g., 0.5 for 0.5%)
+- `timeout::Int`: Timeout in seconds for API calls or RPC requests
 - `metadata::Dict{String, Any}`: Additional metadata
+- `protocol::String`: The protocol identifier (e.g., "uniswap", "sushiswap") - NEW
+- `version::String`: The protocol version (e.g., "v2", "v3") - NEW
 """
 struct DEXConfig
-    name::String
+    name::String # User-defined name for this specific configuration instance
+    protocol::String # Protocol identifier (e.g., "uniswap")
+    version::String  # Protocol version (e.g., "v2")
     chain_id::Int
     rpc_url::String
     router_address::String
     factory_address::String
-    api_key::String
-    private_key::String
+    api_key::String # For DEXs that have a separate API (e.g., 0x API)
+    private_key::String # For on-chain order execution - should be handled securely
     gas_limit::Int
-    gas_price::Float64
+    gas_price::Float64 # In Gwei or equivalent smallest unit for non-EVM
     slippage::Float64
     timeout::Int
     metadata::Dict{String, Any}
 
     function DEXConfig(;
         name::String,
+        protocol::String, # Added protocol
+        version::String,  # Added version
         chain_id::Int,
-        rpc_url::String,
+        rpc_url::String, 
         router_address::String = "",
         factory_address::String = "",
         api_key::String = "",
-        private_key::String = "",
+        private_key::String = "", 
         gas_limit::Int = 300000,
-        gas_price::Float64 = 5.0,
-        slippage::Float64 = 0.5,
+        gas_price::Float64 = 5.0, 
+        slippage::Float64 = 0.5, 
         timeout::Int = 30,
         metadata::Dict{String, Any} = Dict{String, Any}()
     )
-        new(name, chain_id, rpc_url, router_address, factory_address,
+        new(name, protocol, version, chain_id, rpc_url, router_address, factory_address,
             api_key, private_key, gas_limit, gas_price, slippage, timeout, metadata)
     end
 end
@@ -221,223 +227,104 @@ end
 """
     AbstractDEX
 
-Abstract type for DEX implementations.
+Abstract type for DEX implementations. Concrete types must implement the interface methods.
 """
 abstract type AbstractDEX end
 
-# ===== Interface Methods =====
+# ===== Interface Methods (to be implemented by concrete DEX types) =====
 
 """
-    get_price(dex::AbstractDEX, pair::DEXPair)
+    get_price(dex::AbstractDEX, pair::DEXPair)::Float64
 
-Get the current price for a trading pair.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `pair::DEXPair`: The trading pair
-
-# Returns
-- `Float64`: The current price
+Get the current price for a trading pair (price of token0 in terms of token1).
 """
-function get_price(dex::AbstractDEX, pair::DEXPair)
+function get_price(dex::AbstractDEX, pair::DEXPair)::Float64
     error("get_price not implemented for $(typeof(dex))")
 end
 
 """
-    get_liquidity(dex::AbstractDEX, pair::DEXPair)
+    get_liquidity(dex::AbstractDEX, pair::DEXPair)::Tuple{Float64, Float64}
 
-Get the current liquidity for a trading pair.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `pair::DEXPair`: The trading pair
-
-# Returns
-- `Tuple{Float64, Float64}`: The liquidity of token0 and token1
+Get the current liquidity for a trading pair (amount of token0, amount of token1).
 """
-function get_liquidity(dex::AbstractDEX, pair::DEXPair)
+function get_liquidity(dex::AbstractDEX, pair::DEXPair)::Tuple{Float64, Float64}
     error("get_liquidity not implemented for $(typeof(dex))")
 end
 
 """
     create_order(dex::AbstractDEX, pair::DEXPair, order_type::OrderType,
-                side::OrderSide, amount::Float64, price::Float64=0.0)
+                side::OrderSide, amount::Float64, price::Float64=0.0)::DEXOrder
 
-Create a new order on the DEX.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `pair::DEXPair`: The trading pair
-- `order_type::OrderType`: The type of order
-- `side::OrderSide`: The side of the order (buy or sell)
-- `amount::Float64`: The amount of the base token
-- `price::Float64`: The price in terms of the quote token (for limit orders)
-
-# Returns
-- `DEXOrder`: The created order
+Create a new order on the DEX. `price` is for limit orders.
 """
 function create_order(dex::AbstractDEX, pair::DEXPair, order_type::OrderType,
-                     side::OrderSide, amount::Float64, price::Float64=0.0)
+                     side::OrderSide, amount::Float64, price::Float64=0.0)::DEXOrder
     error("create_order not implemented for $(typeof(dex))")
 end
 
 """
-    create_order(dex::AbstractDEX, pair_str::String, side_str::String,
-                amount::Float64, price::Float64=0.0)
-
-Create a new order on the DEX using string parameters.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `pair_str::String`: The trading pair as a string (e.g., "ETH/USDT")
-- `side_str::String`: The side of the order ("BUY" or "SELL")
-- `amount::Float64`: The amount of the base token
-- `price::Float64`: The price in terms of the quote token
-
-# Returns
-- `DEXOrder`: The created order
-"""
-function create_order(dex::AbstractDEX, pair_str::String, side_str::String,
-                     amount::Float64, price::Float64=0.0)
-    # Get all pairs
-    pairs = get_pairs(dex)
-
-    # Find the pair that matches the string
-    pair = nothing
-    for p in pairs
-        if "$(p.token0.symbol)/$(p.token1.symbol)" == pair_str
-            pair = p
-            break
-        end
-    end
-
-    if pair === nothing
-        error("Trading pair not found: $pair_str")
-    end
-
-    # Parse the side
-    side = side_str == "BUY" ? BUY : SELL
-
-    # Create the order
-    return create_order(dex, pair, MARKET, side, amount, price)
-end
-
-"""
-    cancel_order(dex::AbstractDEX, order::DEXOrder)
+    cancel_order(dex::AbstractDEX, order_id::String)::Bool
 
 Cancel an existing order on the DEX.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `order::DEXOrder`: The order to cancel
-
-# Returns
-- `Bool`: Whether the cancellation was successful
 """
-function cancel_order(dex::AbstractDEX, order::DEXOrder)
+function cancel_order(dex::AbstractDEX, order_id::String)::Bool # Changed from order::DEXOrder to order_id
     error("cancel_order not implemented for $(typeof(dex))")
 end
 
 """
-    get_order_status(dex::AbstractDEX, order_id::String)
+    get_order_status(dex::AbstractDEX, order_id::String)::DEXOrder
 
 Get the status of an order.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `order_id::String`: The ID of the order
-
-# Returns
-- `DEXOrder`: The updated order
 """
-function get_order_status(dex::AbstractDEX, order_id::String)
+function get_order_status(dex::AbstractDEX, order_id::String)::DEXOrder
     error("get_order_status not implemented for $(typeof(dex))")
 end
 
 """
-    get_trades(dex::AbstractDEX, pair::DEXPair; limit::Int=100, from_time::Float64=0.0)
+    get_trades(dex::AbstractDEX, pair::DEXPair; limit::Int=100, from_timestamp::Float64=0.0)::Vector{DEXTrade}
 
 Get recent trades for a trading pair.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `pair::DEXPair`: The trading pair
-- `limit::Int`: Maximum number of trades to return
-- `from_time::Float64`: Timestamp to start from
-
-# Returns
-- `Vector{DEXTrade}`: Recent trades
 """
-function get_trades(dex::AbstractDEX, pair::DEXPair; limit::Int=100, from_time::Float64=0.0)
+function get_trades(dex::AbstractDEX, pair::DEXPair; limit::Int=100, from_timestamp::Float64=0.0)::Vector{DEXTrade}
     error("get_trades not implemented for $(typeof(dex))")
 end
 
 """
-    get_pairs(dex::AbstractDEX; limit::Int=100)
+    get_pairs(dex::AbstractDEX; limit::Int=100)::Vector{DEXPair}
 
 Get available trading pairs on the DEX.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `limit::Int`: Maximum number of pairs to return
-
-# Returns
-- `Vector{DEXPair}`: Available trading pairs
 """
-function get_pairs(dex::AbstractDEX; limit::Int=100)
+function get_pairs(dex::AbstractDEX; limit::Int=100)::Vector{DEXPair}
     error("get_pairs not implemented for $(typeof(dex))")
 end
 
 """
-    get_tokens(dex::AbstractDEX; limit::Int=100)
+    get_tokens(dex::AbstractDEX; limit::Int=100)::Vector{DEXToken}
 
 Get available tokens on the DEX.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `limit::Int`: Maximum number of tokens to return
-
-# Returns
-- `Vector{DEXToken}`: Available tokens
 """
-function get_tokens(dex::AbstractDEX; limit::Int=100)
+function get_tokens(dex::AbstractDEX; limit::Int=100)::Vector{DEXToken}
     error("get_tokens not implemented for $(typeof(dex))")
 end
 
 """
-    get_balance(dex::AbstractDEX, token::DEXToken, address::String="")
+    get_balance(dex::AbstractDEX, token::DEXToken; wallet_address::String="")::Float64
 
 Get the balance of a token for the configured wallet or a specific address.
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-- `token::DEXToken`: The token
-- `address::String`: The address (if empty, uses the configured wallet)
-
-# Returns
-- `Float64`: The balance
+If `wallet_address` is empty, uses the DEX's configured wallet (if any).
 """
-function get_balance(dex::AbstractDEX, token::DEXToken, address::String="")
+function get_balance(dex::AbstractDEX, token::DEXToken; wallet_address::String="")::Float64
     error("get_balance not implemented for $(typeof(dex))")
 end
 
 """
-    get_trading_pairs(dex::AbstractDEX)
+    get_trading_pairs(dex::AbstractDEX)::Vector{String}
 
-Get available trading pairs on the DEX as strings (e.g., "ETH/USDT").
-
-# Arguments
-- `dex::AbstractDEX`: The DEX instance
-
-# Returns
-- `Vector{String}`: Available trading pairs as strings
+Helper to get available trading pairs on the DEX as strings (e.g., "ETH/USDT").
 """
-function get_trading_pairs(dex::AbstractDEX)
-    # Get the pairs
+function get_trading_pairs(dex::AbstractDEX)::Vector{String}
     pairs = get_pairs(dex)
-
-    # Convert to strings
-    return ["$(pair.token0.symbol)/$(pair.token1.symbol)" for pair in pairs]
+    return ["$(p.token0.symbol)/$(p.token1.symbol)" for p in pairs]
 end
 
-end # module
+end # module DEXBase

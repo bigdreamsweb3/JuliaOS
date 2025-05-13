@@ -1,219 +1,75 @@
+# src/Agents.jl
+
+"""
+Agents.jl - Core Agent Runtime
+
+This module provides the fundamental structures and logic for managing autonomous agents,
+including their lifecycle, execution loop, memory, and interaction with abilities/skills.
+It orchestrates components from other specialized modules like Config, Persistence,
+Metrics, Monitor, Swarm, and LLM Integration.
+"""
 module Agents
-
-export Agent, AgentConfig, AgentStatus, AgentType,
-       createAgent, getAgent, listAgents, updateAgent, deleteAgent,
-       startAgent, stopAgent, pauseAgent, resumeAgent, getAgentStatus,
-       executeAgentTask, getAgentMemory, setAgentMemory, clearAgentMemory,
-       register_ability, register_skill, publish_to_swarm
-
-#=
-===========================================================
-   JuliaOS – Complete Agent Runtime (all‑in‑one edition)
-   Drop‑in replacement for julia/src/agents/Agents.jl
-===========================================================
-  Features
-  --------
-  ✔ CRUD & life‑cycle helpers (create/start/pause/stop/etc.)
-  ✔ Ability registry (callable functions)
-  ✔ Skill engine with XP & scheduling
-  ✔ Priority message queue per agent
-  ✔ LRU memory w/ OrderedDict
-  ✔ Persistent store (JSON on disk) – survives restarts (NOW ATOMIC)
-  ✔ Basic Swarm hooks (publish / subscribe)
-  ✔ Optional OpenAI chat integration
-===========================================================
-=#
 
 # ----------------------------------------------------------------------
 # DEPENDENCIES
 # ----------------------------------------------------------------------
 using Dates, Random, UUIDs, Logging, Base.Threads
-using DataStructures           # OrderedDict + PriorityQueue
-using JSON3                    # light persistence (stdlib in Julia 1.10+)
+using DataStructures # OrderedDict + PriorityQueue + CircularBuffer (CircularBuffer used in Metrics)
+# JSON3 and Atomic are used by Persistence, but might be needed here if
+# Agent struct serialization/deserialization logic was directly in this file.
+# For now, Persistence handles it.
+using Cron # Added for cron scheduling
 
 # ----------------------------------------------------------------------
-# CONFIGURATION MANAGEMENT
+# IMPORT OTHER MODULES
 # ----------------------------------------------------------------------
-module Config
-    using TOML, Logging
-    export load_config, get_config, set_config
+# Assuming these are sibling modules in the same package (e.g., in src/)
+using .Config
+using .Persistence
+using .AgentMetrics
+using .AgentMonitor
+using .LLMIntegration
+# Assuming Swarm is a separate module, potentially in another directory/package
+# If Swarm is in a different package, you'd need `using Swarm` in your Project.toml
+# and `using Swarm` here. If it's a submodule of JuliaOS, `using JuliaOS.Swarm`.
+# For now, we'll assume it's a sibling module in the same package for simplicity.
+import .Swarm # Use import to bring in specific functions/types
 
-    # Default configuration values
-    const DEFAULT_CONFIG = Dict(
-        "storage" => Dict(
-            "path" => joinpath(@__DIR__, "..", "..", "db", "agents_state.json"),
-            "backup_enabled" => true,
-            "backup_count" => 5,
-            "auto_persist" => true
-        ),
-        "agent" => Dict(
-            "max_task_history" => 100,
-            "xp_decay_rate" => 0.999,
-            "default_sleep_ms" => 1000,
-            "paused_sleep_ms" => 500,
-            "auto_restart" => false
-        ),
-        "metrics" => Dict(
-            "enabled" => true,
-            "collection_interval" => 60, # seconds
-            "retention_period" => 86400  # 24 hours in seconds
-        ),
-        "swarm" => Dict(
-            "enabled" => false,
-            "backend" => "none", # Options: none, redis, nats, zeromq
-            "connection_string" => "",
-            "default_topic" => "juliaos.swarm"
-        )
-    )
+# Re-export functions/types from other modules that are part of the public API
+export Agent, AgentConfig, AgentStatus, AgentType,
+       createAgent, getAgent, listAgents, updateAgent, deleteAgent,
+       startAgent, stopAgent, pauseAgent, resumeAgent, getAgentStatus,
+       executeAgentTask, getAgentMemory, setAgentMemory, clearAgentMemory,
+       register_ability, register_skill, Schedule, # Export Schedule struct
+       # Export Task Tracking functions/types (NEW)
+       getTaskStatus, getTaskResult, listAgentTasks, cancelTask, TaskStatus,
+       # Export Agent Cloning function (NEW)
+       cloneAgent,
+       # Export Swarm functions (imported from Swarm module)
+       Swarm.publish_to_swarm, Swarm.subscribe_swarm!,
+       # Export metrics functions
+       get_metrics, get_agent_metrics, reset_metrics, AgentMetrics, MetricType,
+       # Export monitor functions
+       start_monitor, stop_monitor, get_health_status, AgentMonitor, HealthStatus,
+       # Export Abstract Types for Pluggability (NEW)
+       AbstractAgentMemory, AbstractAgentQueue, AbstractLLMIntegration,
+       # Export Default Pluggable Implementations (for users to reference concrete types)
+       OrderedDictAgentMemory, PriorityAgentQueue, DefaultLLMIntegration,
+       # Export event triggering function
+       trigger_agent_event,
+       # Export fitness evaluation function
+       evaluateAgentFitness
 
-    # Current configuration (initialized with defaults)
-    const CURRENT_CONFIG = deepcopy(DEFAULT_CONFIG)
 
-    # Load configuration from file
-    function load_config(config_path::String="")
-        if isempty(config_path)
-            # Try default locations
-            config_paths = [
-                joinpath(@__DIR__, "..", "..", "config", "agents.toml"),
-                joinpath(homedir(), ".juliaos", "config", "agents.toml")
-            ]
-
-            for path in config_paths
-                if isfile(path)
-                    config_path = path
-                    break
-                end
-            end
-        end
-
-        if !isempty(config_path) && isfile(config_path)
-            try
-                config_data = TOML.parsefile(config_path)
-                # Merge with defaults (keeping defaults for missing values)
-                _merge_configs!(CURRENT_CONFIG, config_data)
-                @info "Loaded configuration from $config_path"
-                return true
-            catch e
-                @error "Failed to load configuration from $config_path" exception=(e, catch_backtrace())
-                return false
-            end
-        else
-            @info "No configuration file found, using defaults"
-            return false
-        end
-    end
-
-    # Helper to recursively merge configs
-    function _merge_configs!(target::Dict, source::Dict)
-        for (k, v) in source
-            if isa(v, Dict) && haskey(target, k) && isa(target[k], Dict)
-                _merge_configs!(target[k], v)
-            else
-                target[k] = v
-            end
-        end
-    end
-
-    # Get configuration value with dot notation
-    function get_config(key::String, default=nothing)
-        parts = split(key, ".")
-        current = CURRENT_CONFIG
-
-        for part in parts[1:end-1]
-            if haskey(current, part) && isa(current[part], Dict)
-                current = current[part]
-            else
-                return default
-            end
-        end
-
-        # Get the value or return the default
-        value = get(current, parts[end], default)
-
-        # If the value and default are of different types, try to convert
-        if value !== default && default !== nothing && typeof(value) != typeof(default)
-            try
-                # Convert value to match the type of default
-                if isa(default, Number) && (isa(value, AbstractString) || isa(value, Number))
-                    if isa(default, Integer)
-                        value = isa(value, AbstractString) ? parse(Int, value) : Int(value)
-                    elseif isa(default, AbstractFloat)
-                        value = isa(value, AbstractString) ? parse(Float64, value) : Float64(value)
-                    end
-                elseif isa(default, Bool) && isa(value, AbstractString)
-                    lowercase_value = lowercase(value)
-                    if lowercase_value == "true"
-                        value = true
-                    elseif lowercase_value == "false"
-                        value = false
-                    end
-                end
-            catch
-                # If conversion fails, return the default
-                return default
-            end
-        end
-
-        return value
-    end
-
-    # Set configuration value with dot notation
-    function set_config(key::String, value)
-        parts = split(key, ".")
-        current = CURRENT_CONFIG
-
-        for part in parts[1:end-1]
-            if !haskey(current, part) || !isa(current[part], Dict)
-                current[part] = Dict{String, Any}()
-            end
-            current = current[part]
-        end
-
-        # Convert the value to the appropriate type if needed
-        if haskey(current, parts[end])
-            existing_value = current[parts[end]]
-            if isa(existing_value, Number) && isa(value, AbstractString)
-                # Try to convert string to number
-                try
-                    if isa(existing_value, Integer)
-                        value = parse(Int, value)
-                    elseif isa(existing_value, AbstractFloat)
-                        value = parse(Float64, value)
-                    end
-                catch
-                    # If conversion fails, use the original value
-                end
-            elseif isa(existing_value, Bool) && isa(value, AbstractString)
-                # Try to convert string to boolean
-                lowercase_value = lowercase(value)
-                if lowercase_value == "true"
-                    value = true
-                elseif lowercase_value == "false"
-                    value = false
-                end
-            end
-        end
-
-        current[parts[end]] = value
-        return value
-    end
-
-    # Load configuration at module initialization
-    function __init__()
-        load_config()
-    end
-end
-
-# Import configuration functions
-using .Config: get_config, set_config, load_config
-
-# Initialize configuration values from loaded config
-const STORE_PATH = get_config("storage.path", joinpath(@__DIR__, "..", "..", "db", "agents_state.json"))
-const MAX_TASK_HISTORY = get_config("agent.max_task_history", 100)
-const XP_DECAY_RATE = get_config("agent.xp_decay_rate", 0.999)
-const DEFAULT_SLEEP_MS = get_config("agent.default_sleep_ms", 1000)
-const PAUSED_SLEEP_MS = get_config("agent.paused_sleep_ms", 500)
-const AUTO_RESTART = get_config("agent.auto_restart", false)
+# ----------------------------------------------------------------------
+# CONFIGURATION CONSTANTS (Derived from Config module)
+# ----------------------------------------------------------------------
+# These are constants used within this core module
+const MAX_TASK_HISTORY = Config.get_config("agent.max_task_history", 100)
+const XP_DECAY_RATE = Config.get_config("agent.xp_decay_rate", 0.999)
+const DEFAULT_SLEEP_MS = Config.get_config("agent.default_sleep_ms", 1000) # Kept for fallback
+const PAUSED_SLEEP_MS = Config.get_config("agent.paused_sleep_ms", 500)   # Kept for fallback
+const AUTO_RESTART = Config.get_config("agent.auto_restart", false)
 
 
 # ----------------------------------------------------------------------
@@ -221,7 +77,7 @@ const AUTO_RESTART = get_config("agent.auto_restart", false)
 # ----------------------------------------------------------------------
 @enum AgentType begin
     TRADING = 1; MONITOR = 2; ARBITRAGE = 3; DATA_COLLECTION = 4;
-    NOTIFICATION = 5; CUSTOM = 99
+    NOTIFICATION = 5; CUSTOM = 99; DEV = 100 # Added DEV type
 end
 
 @enum AgentStatus begin
@@ -229,9 +85,77 @@ end
     PAUSED = 4; STOPPED = 5; ERROR = 6
 end
 
+# NEW: Task Status Enum
+@enum TaskStatus begin
+    TASK_PENDING = 1
+    TASK_RUNNING = 2
+    TASK_COMPLETED = 3
+    TASK_FAILED = 4
+    TASK_CANCELLED = 5
+    TASK_UNKNOWN = 99 # For loading potentially old/corrupt data
+end
+
+# ----------------------------------------------------------------------
+# ABSTRACT TYPES for Pluggability (NEW)
+# ----------------------------------------------------------------------
+"""
+    AbstractAgentMemory
+
+Abstract type for agent memory implementations.
+Concrete types must implement:
+- `get_value(mem::AbstractAgentMemory, key::String)`
+- `set_value!(mem::AbstractAgentMemory, key::String, val)`
+- `delete_value!(mem::AbstractAgentMemory, key::String)`
+- `clear!(mem::AbstractAgentMemory)`
+- `length(mem::AbstractAgentMemory)`
+- `keys(mem::AbstractAgentMemory)`
+"""
+abstract type AbstractAgentMemory end
+
+"""
+    AbstractAgentQueue
+
+Abstract type for agent task queue implementations.
+Concrete types must implement:
+- `enqueue!(q::AbstractAgentQueue, item, priority::Real)`
+- `dequeue!(q::AbstractAgentQueue)`
+- `peek(q::AbstractAgentQueue)`
+- `isempty(q::AbstractAgentQueue)`
+- `length(q::AbstractAgentQueue)`
+"""
+abstract type AbstractAgentQueue end
+
+"""
+    AbstractLLMIntegration
+
+Abstract type for LLM integration implementations.
+Concrete types must implement:
+- `chat(llm::AbstractLLMIntegration, prompt::String; cfg::Dict)`
+"""
+abstract type AbstractLLMIntegration end
+
+# Note: Abstract types for Persistence and Swarm are better defined in their modules.
+
+
 # ----------------------------------------------------------------------
 # CONFIG STRUCT
 # ----------------------------------------------------------------------
+"""
+    AgentConfig
+
+Configuration for creating a new agent.
+
+# Fields
+- `name::String`: Agent name
+- `type::AgentType`: Agent type (enum)
+- `abilities::Vector{String}`: List of ability names this agent type can perform
+- `chains::Vector{String}`: List of chain names this agent type can execute
+- `parameters::Dict{String,Any}`: Agent-specific parameters
+- `llm_config::Dict{String,Any}`: Configuration for the LLM provider (can specify implementation type)
+- `memory_config::Dict{String,Any}`: Configuration for agent memory (can specify implementation type)
+- `queue_config::Dict{String,Any}`: Configuration for agent queue (can specify implementation type) (NEW)
+- `max_task_history::Int`: Maximum number of tasks to keep in history
+"""
 struct AgentConfig
     name::String
     type::AgentType
@@ -240,29 +164,54 @@ struct AgentConfig
     parameters::Dict{String,Any}
     llm_config::Dict{String,Any}
     memory_config::Dict{String,Any}
-    max_task_history::Int # Added config for history limit
+    queue_config::Dict{String,Any} # NEW: Queue config
+    max_task_history::Int
 
     function AgentConfig(name::String, type::AgentType;
                          abilities::Vector{String}=String[], chains::Vector{String}=String[],
                          parameters::Dict{String,Any}=Dict(),
                          llm_config::Dict{String,Any}=Dict(),
                          memory_config::Dict{String,Any}=Dict(),
-                         max_task_history::Int=MAX_TASK_HISTORY) # Default history size
+                         queue_config::Dict{String,Any}=Dict(), # NEW: Default queue config
+                         max_task_history::Int=MAX_TASK_HISTORY)
         isempty(llm_config) && (llm_config = Dict("provider"=>"openai","model"=>"gpt-4o-mini","temperature"=>0.7,"max_tokens"=>1024))
-        isempty(memory_config) && (memory_config = Dict("max_size"=>1000,"retention_policy"=>"lru"))
-        new(name, type, abilities, chains, parameters, llm_config, memory_config, max_task_history)
+        isempty(memory_config) && (memory_config = Dict("type"=>"ordered_dict","max_size"=>1000,"retention_policy"=>"lru")) # Added default type
+        isempty(queue_config) && (queue_config = Dict("type"=>"priority_queue")) # NEW: Default queue type
+        new(name, type, abilities, chains, parameters, llm_config, memory_config, queue_config, max_task_history)
     end
 end
 
 # ----------------------------------------------------------------------
-# SKILL ENGINE -----------------------------------------------------------
+# SKILL ENGINE (Registry defined here, processing logic in agent loop)
 # ----------------------------------------------------------------------
+# Schedule Struct for Advanced Scheduling is defined above
+
+"""
+    Skill
+
+Represents a scheduled skill an agent can perform.
+
+# Fields
+- `name::String`: Skill name
+- `fn::Function`: The Julia function implementing the skill logic
+- `schedule::Union{Schedule, Nothing}`: The scheduling definition (nothing for on-demand only)
+"""
 struct Skill
     name::String
     fn::Function
-    schedule::Real          # seconds; 0 → on‑demand only
+    schedule::Union{Schedule, Nothing} # Use the new Schedule type
 end
 
+"""
+    SkillState
+
+Mutable state associated with an agent's skill.
+
+# Fields
+- `skill::Skill`: The skill definition
+- `xp::Float64`: Experience points for the skill
+- `last_exec::DateTime`: Timestamp of the last execution
+"""
 mutable struct SkillState
     skill::Skill
     xp::Float64
@@ -271,609 +220,281 @@ end
 
 const SKILL_REGISTRY = Dict{String,Skill}()
 
-function register_skill(name::String, fn::Function; schedule::Real=0)
+"""
+    register_skill(name::String, fn::Function; schedule::Union{Real, Schedule, Nothing}=nothing)
+
+Registers a skill with the global skill registry.
+
+# Arguments
+- `name::String`: The name of the skill.
+- `fn::Function`: The Julia function implementing the skill logic.
+- `schedule::Union{Real, Schedule, Nothing}`: The scheduling definition. Can be a number (seconds for periodic), a Schedule object, or nothing for on-demand.
+"""
+function register_skill(name::String, fn::Function; schedule::Union{Real, Schedule, Nothing}=nothing)
+    # Convert Real schedule to Periodic Schedule struct if needed
+    if isa(schedule, Real) && schedule > 0
+        schedule = Schedule(:periodic, schedule)
+    elseif isa(schedule, Real) && schedule == 0
+        schedule = nothing # 0 schedule means on-demand only (handled by ability)
+    end
     SKILL_REGISTRY[name] = Skill(name, fn, schedule)
-    @info "Registered skill $name (schedule = $schedule s)"
+    @info "Registered skill '$name' (schedule = $(isnothing(schedule) ? "on-demand" : schedule))"
 end
+
+# ----------------------------------------------------------------------
+# TASK TRACKING (NEW)
+# ----------------------------------------------------------------------
+# TaskResult struct and TaskStatus enum are defined above
+
 
 # ----------------------------------------------------------------------
 # MAIN AGENT STRUCTURE
 # ----------------------------------------------------------------------
+"""
+    Agent
+
+Represents an autonomous agent instance.
+
+# Fields
+- `id::String`: Unique agent ID
+- `name::String`: Agent name
+- `type::AgentType`: Agent type
+- `status::AgentStatus`: Current status
+- `created::DateTime`: Creation timestamp
+- `updated::DateTime`: Last update timestamp (reflects status/config changes)
+- `config::AgentConfig`: Agent configuration
+- `memory::AbstractAgentMemory`: Agent memory implementation (NEW: Abstract Type)
+- `task_history::Vector{Dict{String,Any}}`: History of completed tasks (capped)
+- `skills::Dict{String,SkillState}`: State of registered skills
+- `queue::AbstractAgentQueue`: Agent task queue implementation (NEW: Abstract Type)
+- `task_results::Dict{String, TaskResult}`: Dictionary to track submitted tasks by ID (NEW)
+- `llm_integration::Union{AbstractLLMIntegration, Nothing}`: LLM integration instance (NEW: Abstract Type)
+- `swarm_connection::Any`: Swarm connection object (type depends on backend) (Moved from Swarm module concept)
+- `lock::ReentrantLock`: Lock for protecting mutable agent state (NEW)
+- `condition::Condition`: Condition variable for signaling the agent loop (NEW)
+- `last_error::Union{Exception, Nothing}`: The last error encountered (NEW)
+- `last_error_timestamp::Union{DateTime, Nothing}`: Timestamp of the last error (NEW)
+- `last_activity::DateTime`: Timestamp of the last significant activity (NEW)
+"""
 mutable struct Agent
     id::String; name::String; type::AgentType; status::AgentStatus
     created::DateTime; updated::DateTime; config::AgentConfig
-    memory::OrderedDict{String,Any}                 # LRU memory
+    memory::AbstractAgentMemory          # LRU memory (NEW: Abstract Type)
     task_history::Vector{Dict{String,Any}}
     skills::Dict{String,SkillState}
-    queue::PriorityQueue{Any,Float64}               # message queue (lower = higher prio)
+    queue::AbstractAgentQueue        # message queue (stores task_ids) (NEW: Abstract Type)
+    task_results::Dict{String, TaskResult} # NEW: Dictionary to track tasks by ID
+    llm_integration::Union{AbstractLLMIntegration, Nothing} # NEW: LLM instance
+    swarm_connection::Any # Swarm connection object (type depends on backend) (NEW)
+    lock::ReentrantLock                      # NEW: Lock for protecting mutable state
+    condition::Condition                     # NEW: Condition variable for signaling loop
+    last_error::Union{Exception, Nothing}    # NEW: Last error object
+    last_error_timestamp::Union{DateTime, Nothing} # NEW: Timestamp of last error
+    last_activity::DateTime                  # NEW: Timestamp of last activity
 end
 
 # ----------------------------------------------------------------------
-# METRICS COLLECTION
+# GLOBAL REGISTRIES & AGENT STORAGE
 # ----------------------------------------------------------------------
-module Metrics
-    using Dates, DataStructures, Statistics
-    export record_metric, get_metrics, get_agent_metrics, reset_metrics
+const AGENTS          = Dict{String,Agent}() # Global dictionary of agents
+const AGENT_THREADS = Dict{String,Task}() # Map agent ID to its running task
+const ABILITY_REGISTRY = Dict{String,Function}() # Global registry of ability functions
+const AGENTS_LOCK     = ReentrantLock() # Lock for concurrent access to AGENTS dict and AGENT_THREADS
 
-    # Import the get_config function from parent module
-    using ..Config: get_config
 
-    # Metric types
-    @enum MetricType begin
-        COUNTER = 1    # Monotonically increasing counter (e.g., tasks_executed)
-        GAUGE = 2      # Value that can go up and down (e.g., memory_usage)
-        HISTOGRAM = 3  # Distribution of values (e.g., execution_time)
-        SUMMARY = 4    # Summary statistics (min, max, avg, etc.)
-    end
+# ----------------------------------------------------------------------
+# ABILITY REGISTRY (Definition here, registration function above) ------
+# ----------------------------------------------------------------------
+# register_ability function is defined above
 
-    # Metric data structure
-    mutable struct Metric
-        name::String
-        type::MetricType
-        value::Union{Number, Vector{Number}, Dict{String, Any}}
-        timestamp::DateTime
-        tags::Dict{String, String}
-    end
 
-    # Global metrics storage
-    # Structure: Dict{agent_id, Dict{metric_name, CircularBuffer{Metric}}}
-    const METRICS_STORE = Dict{String, Dict{String, CircularBuffer{Metric}}}()
-    const METRICS_LOCK = ReentrantLock()
+# ----------------------------------------------------------------------
+# DEFAULT PLUGGABLE IMPLEMENTATIONS (Examples - these would ideally be in separate files)
+# ----------------------------------------------------------------------
 
-    # Initialize metrics for an agent
-    function init_agent_metrics(agent_id::String)
-        lock(METRICS_LOCK) do
-            if !haskey(METRICS_STORE, agent_id)
-                METRICS_STORE[agent_id] = Dict{String, CircularBuffer{Metric}}()
-            end
-        end
-    end
+# Example Default Memory: OrderedDict Memory
+struct OrderedDictAgentMemory <: AbstractAgentMemory
+    data::OrderedDict{String, Any}
+    max_size::Int
+end
+# Implement AbstractAgentMemory interface for OrderedDictAgentMemory
+get_value(mem::OrderedDictAgentMemory, key::String) = get(mem.data, key, nothing)
+set_value!(mem::OrderedDictAgentMemory, key::String, val) = (mem.data[key] = val; _touch!(mem.data, key); _enforce_lru_size!(mem)) # Need helper for size
+delete_value!(mem::OrderedDictAgentMemory, key::String) = delete!(mem.data, key)
+clear!(mem::OrderedDictAgentMemory) = empty!(mem.data)
+Base.length(mem::OrderedDictAgentMemory) = length(mem.data)
+Base.keys(mem::OrderedDictAgentMemory) = keys(mem.data)
+_touch!(mem::OrderedDict{String,Any}, key) = (val = mem[key]; delete!(mem,key); mem[key] = val) # Helper for LRU
+_enforce_lru_size!(mem::OrderedDictAgentMemory) = while length(mem.data) > mem.max_size; popfirst!(mem.data); end # Helper for size limit
 
-    # Record a metric for an agent
-    function record_metric(agent_id::String, name::String, value::Any;
-                          type::MetricType=GAUGE,
-                          tags::Dict{String, String}=Dict{String, String}())
-        lock(METRICS_LOCK) do
-            # Initialize agent metrics if needed
-            if !haskey(METRICS_STORE, agent_id)
-                init_agent_metrics(agent_id)
-            end
+# Example Default Queue: Priority Queue
+struct PriorityAgentQueue <: AbstractAgentQueue
+    queue::PriorityQueue{Any, Float64} # Stores task_ids
+end
+# Implement AbstractAgentQueue interface for PriorityAgentQueue
+DataStructures.enqueue!(q::PriorityAgentQueue, item, priority::Real) = enqueue!(q.queue, item, priority)
+DataStructures.dequeue!(q::PriorityAgentQueue) = dequeue!(q.queue)
+DataStructures.peek(q::PriorityAgentQueue) = peek(q.queue)
+Base.isempty(q::PriorityAgentQueue) = isempty(q.queue)
+Base.length(q::PriorityAgentQueue) = length(q.queue)
 
-            # Initialize metric buffer if needed
-            agent_metrics = METRICS_STORE[agent_id]
-            if !haskey(agent_metrics, name)
-                # Buffer size based on retention period and collection interval
-                retention_period = get_config("metrics.retention_period", 86400) # 24 hours
-                collection_interval = get_config("metrics.collection_interval", 60) # 60 seconds
-                buffer_size = max(100, ceil(Int, retention_period / collection_interval))
-                agent_metrics[name] = CircularBuffer{Metric}(buffer_size)
-            end
+# Example Default LLM Integration (Uses LLMIntegration module)
+struct DefaultLLMIntegration <: AbstractLLMIntegration
+    # Could store config or other state here if needed
+end
+# Implement AbstractLLMIntegration interface
+LLMIntegration.chat(llm::DefaultLLMIntegration, prompt::String; cfg::Dict) = LLMIntegration.chat(prompt; cfg=cfg)
 
-            # Create and store the metric
-            metric = Metric(name, type, value, now(), tags)
-            push!(agent_metrics[name], metric)
 
-            return metric
-        end
-    end
-
-    # Get metrics for a specific agent
-    function get_agent_metrics(agent_id::String;
-                              metric_name::Union{String, Nothing}=nothing,
-                              start_time::Union{DateTime, Nothing}=nothing,
-                              end_time::Union{DateTime, Nothing}=nothing)
-        result = Dict{String, Any}()
-
-        lock(METRICS_LOCK) do
-            if !haskey(METRICS_STORE, agent_id)
-                return result
-            end
-
-            agent_metrics = METRICS_STORE[agent_id]
-
-            # Filter by metric name if specified
-            metric_names = isnothing(metric_name) ? keys(agent_metrics) : [metric_name]
-
-            for name in metric_names
-                if haskey(agent_metrics, name)
-                    # Filter by time range if specified
-                    filtered_metrics = collect(agent_metrics[name])
-                    if !isnothing(start_time)
-                        filter!(m -> m.timestamp >= start_time, filtered_metrics)
-                    end
-                    if !isnothing(end_time)
-                        filter!(m -> m.timestamp <= end_time, filtered_metrics)
-                    end
-
-                    # Process metrics based on type
-                    if !isempty(filtered_metrics)
-                        last_metric = filtered_metrics[end]
-
-                        if last_metric.type == COUNTER || last_metric.type == GAUGE
-                            # For counters and gauges, return the latest value and a time series
-                            result[name] = Dict(
-                                "current" => last_metric.value,
-                                "type" => string(last_metric.type),
-                                "history" => [(m.timestamp, m.value) for m in filtered_metrics],
-                                "last_updated" => last_metric.timestamp
-                            )
-                        elseif last_metric.type == HISTOGRAM
-                            # For histograms, compute statistics
-                            all_values = vcat([m.value for m in filtered_metrics]...)
-                            if !isempty(all_values)
-                                result[name] = Dict(
-                                    "type" => "HISTOGRAM",
-                                    "count" => length(all_values),
-                                    "min" => minimum(all_values),
-                                    "max" => maximum(all_values),
-                                    "mean" => mean(all_values),
-                                    "median" => median(all_values),
-                                    "last_updated" => last_metric.timestamp
-                                )
-                            end
-                        elseif last_metric.type == SUMMARY
-                            # For summaries, return the latest summary
-                            result[name] = Dict(
-                                "type" => "SUMMARY",
-                                "value" => last_metric.value,
-                                "last_updated" => last_metric.timestamp
-                            )
-                        end
-                    end
-                end
-            end
-        end
-
-        return result
-    end
-
-    # Get metrics for all agents
-    function get_metrics(; metric_name::Union{String, Nothing}=nothing,
-                        start_time::Union{DateTime, Nothing}=nothing,
-                        end_time::Union{DateTime, Nothing}=nothing)
-        result = Dict{String, Dict{String, Any}}()
-
-        lock(METRICS_LOCK) do
-            for agent_id in keys(METRICS_STORE)
-                agent_metrics = get_agent_metrics(agent_id;
-                                                 metric_name=metric_name,
-                                                 start_time=start_time,
-                                                 end_time=end_time)
-                if !isempty(agent_metrics)
-                    result[agent_id] = agent_metrics
-                end
-            end
-        end
-
-        return result
-    end
-
-    # Reset metrics for an agent or all agents
-    function reset_metrics(agent_id::Union{String, Nothing}=nothing)
-        lock(METRICS_LOCK) do
-            if isnothing(agent_id)
-                # Reset all metrics
-                empty!(METRICS_STORE)
-            elseif haskey(METRICS_STORE, agent_id)
-                # Reset metrics for a specific agent
-                delete!(METRICS_STORE, agent_id)
-            end
-        end
+# Helper to create pluggable components based on config (This logic would be in createAgent)
+function _create_memory_component(config::Dict{String, Any})
+    mem_type = get(config, "type", "ordered_dict")
+    max_size = get(config, "max_size", 1000)
+    if mem_type == "ordered_dict"
+        return OrderedDictAgentMemory(OrderedDict{String, Any}(), max_size)
+    # Add cases for other memory types
+    # elseif mem_type == "database_memory"
+    #    return DatabaseAgentMemory(...)
+    else
+        @warn "Unknown memory type '$mem_type'. Using default OrderedDictAgentMemory."
+        return OrderedDictAgentMemory(OrderedDict{String, Any}(), max_size)
     end
 end
 
-# Import metrics functions
-using .Metrics: record_metric, get_metrics, get_agent_metrics
-
-# ----------------------------------------------------------------------
-# GLOBAL REGISTRIES & PERSISTENCE
-# ----------------------------------------------------------------------
-const AGENTS        = Dict{String,Agent}()
-const AGENT_THREADS = Dict{String,Task}()
-const ABILITY_REGISTRY = Dict{String,Function}()
-const AGENTS_LOCK   = ReentrantLock() # ADDED: Lock for concurrent access to AGENTS dict
-
-# Configuration constants
-const DEFAULT_SLEEP_MS = get_config("agent.default_sleep_ms", 1000)
-const PAUSED_SLEEP_MS = get_config("agent.paused_sleep_ms", 500)
-
-# Atomic state saving ---------------------------------------------------
-function _save_state()
-    # !! IMPORTANT: Consider locking AGENTS_LOCK if agents can be modified
-    # while saving state from another thread !!
-    data = Dict{String, Dict{String, Any}}()
-    lock(AGENTS_LOCK) do # Lock during data extraction
-        for (id, a) in AGENTS
-             data[id] = Dict(
-                "id"=>a.id, "name"=>a.name, "type"=>Int(a.type), "status"=>Int(a.status),
-                "created"=>string(a.created), "updated"=>string(a.updated),
-                "config"=>a.config, # AgentConfig is immutable struct, should serialize ok
-                "memory"=>collect(a.memory), # Collect OrderedDict into Vector{Pair}
-                # Save skill state (XP and last execution time)
-                "skills"=>Dict(k=>Dict("xp"=>s.xp,"last_exec"=>string(s.last_exec)) for (k,s) in a.skills)
-            )
-        end
-    end # Unlock AGENTS_LOCK
-
-    temp_path = STORE_PATH * ".tmp"
-    try
-        # Ensure directory exists
-        store_dir = dirname(STORE_PATH)
-        ispath(store_dir) || mkpath(store_dir)
-
-        # Write to temporary file
-        open(temp_path, "w") do io
-            JSON3.write(io, data)
-        end
-
-        # Atomically replace old state file with new one
-        mv(temp_path, STORE_PATH; force=true)
-
-    catch e
-        @error "Failed to save agent state to $STORE_PATH" exception=(e, catch_backtrace())
-        # Clean up temporary file if it exists
-        isfile(temp_path) && rm(temp_path; force=true)
+function _create_queue_component(config::Dict{String, Any})
+    queue_type = get(config, "type", "priority_queue")
+    if queue_type == "priority_queue"
+        return PriorityAgentQueue(PriorityQueue{Any, Float64}())
+    # Add cases for other queue types
+    # elseif queue_type == "fifo_queue"
+    #    return FifoAgentQueue(...)
+    else
+        @warn "Unknown queue type '$queue_type'. Using default PriorityAgentQueue."
+        return PriorityAgentQueue(PriorityQueue{Any, Float64}())
     end
 end
 
-# Auto-persist setting from configuration
-const auto_persist = get_config("storage.auto_persist", true)
-# Consider saving more frequently or based on specific events if atexit is not reliable enough
-atexit(() -> auto_persist && _save_state())
-
-function _load_state()
-    isfile(STORE_PATH) || return
-    local raw # Ensure raw is accessible in catch block if needed
-    try
-        raw = JSON3.read(open(STORE_PATH, "r")) # Open explicitly for reading
-        num_loaded = 0
-        lock(AGENTS_LOCK) do # Lock AGENTS while loading
-            empty!(AGENTS) # Clear existing agents before loading
-            for (id, obj) in raw
-                try
-                    # Reconstruct AgentConfig (handle potential missing fields with get)
-                    cfg_data = obj["config"]
-                    cfg = AgentConfig(
-                        get(cfg_data, "name", "Unnamed Agent"),
-                        AgentType(Int(get(cfg_data, "type", Int(CUSTOM)))),
-                        abilities = get(cfg_data, "abilities", String[]),
-                        chains = get(cfg_data, "chains", String[]),
-                        parameters = get(cfg_data, "parameters", Dict{String,Any}()),
-                        llm_config = get(cfg_data, "llm_config", Dict{String,Any}()),
-                        memory_config = get(cfg_data, "memory_config", Dict{String,Any}()),
-                        max_task_history = get(cfg_data, "max_task_history", MAX_TASK_HISTORY) # Load history limit
-                    )
-
-                    # Reconstruct Agent
-                    ag_status = AgentStatus(Int(get(obj, "status", Int(STOPPED)))) # Default to STOPPED if missing
-                    ag = Agent(
-                        id,
-                        get(obj, "name", cfg.name), # Use config name if obj name missing
-                        AgentType(Int(get(obj, "type", Int(cfg.type)))), # Use config type if obj type missing
-                        ag_status,
-                        DateTime(get(obj, "created", string(now()))),
-                        DateTime(get(obj, "updated", string(now()))),
-                        cfg,
-                        OrderedDict{String,Any}(get(obj, "memory", [])), # Load memory, default empty
-                        Dict{String,Any}[], # Task history is transient, start empty
-                        Dict{String,SkillState}(), # Initialize skills empty, load below
-                        PriorityQueue{Any,Float64}() # Queue is transient, start empty
-                    )
-
-                    # *** FIXED: Load skill states ***
-                    if haskey(obj, "skills") && obj["skills"] isa Dict && !isempty(obj["skills"])
-                        loaded_skills_data = obj["skills"]
-                        for (skill_name, skill_data) in loaded_skills_data
-                            registered_skill = get(SKILL_REGISTRY, skill_name, nothing)
-                            if registered_skill !== nothing && skill_data isa Dict
-                                try
-                                    loaded_xp = Float64(get(skill_data, "xp", 0.0))
-                                    loaded_last_exec = DateTime(get(skill_data, "last_exec", string(epoch))) # Use epoch if missing
-                                    ag.skills[skill_name] = SkillState(registered_skill, loaded_xp, loaded_last_exec)
-                                catch skill_load_err
-                                    @warn "Error parsing state for skill '$skill_name' in agent $id: $skill_load_err"
-                                end
-                            elseif registered_skill === nothing
-                                @warn "Skill '$skill_name' found in saved state for agent $id but not in SKILL_REGISTRY. Ignoring."
-                            end
-                        end
-                    end
-                    # *** End Skill Loading Fix ***
-
-                    AGENTS[id] = ag
-                    num_loaded += 1
-
-                    # If agent was running/paused, maybe restart it? Or leave stopped?
-                    # Current behavior: Loads agent as STOPPED (unless ERROR state saved)
-                    # You might want to automatically restart agents that were RUNNING.
-                    # if ag.status == RUNNING || ag.status == PAUSED
-                    #     @info "Attempting to restart loaded agent $(ag.name) ($id)"
-                    #     startAgent(id) # This might need adjustment based on startAgent logic
-                    # end
-
-                catch e
-                    @error "Error loading agent $id from state file: $e" stacktrace=catch_backtrace()
-                end
-            end # end for loop iterating through agents in JSON
-        end # end lock
-        @info "Loaded $num_loaded agents from $STORE_PATH"
-
-    catch e
-        @error "Error reading or parsing agent state file $STORE_PATH: $e" stacktrace=catch_backtrace()
-        # Consider renaming the corrupt file here to prevent load loops
-        # corrupt_path = STORE_PATH * ".corrupt." * string(now())
-        # try; mv(STORE_PATH, corrupt_path; force=true); @warn("Moved corrupt state file to $corrupt_path"); catch mv_e; @error("Could not move corrupt state file $STORE_PATH", exception=mv_e); end
+function _create_llm_component(config::Dict{String, Any})
+    provider = lowercase(get(config, "provider", "none"))
+    if provider != "none"
+        # For now, we only have DefaultLLMIntegration which wraps LLMIntegration module
+        # If you had other LLM integration concrete types, you'd choose here based on provider
+        return DefaultLLMIntegration()
+    else
+        return nothing # No LLM integration needed
     end
 end
 
-# ----------------------------------------------------------------------
-# AGENT MONITORING SYSTEM
-# ----------------------------------------------------------------------
-module AgentMonitor
-    using Dates, Logging, Base.Threads
-    export start_monitor, stop_monitor, get_health_status
+# Swarm connection logic would ideally be in Swarm.jl, returning an AbstractSwarmBackend
+# For now, the Agent struct holds `swarm_connection::Any`
 
-    # Import the get_config function from parent module
-    using ..Config: get_config
-    # Import other needed symbols from parent module
-    import .. AGENTS
-    import .. AGENT_THREADS
-    import .. AGENTS_LOCK
-    import .. getAgent
-    import .. startAgent
-
-    # Health status enum
-    @enum HealthStatus begin
-        HEALTHY = 1
-        WARNING = 2
-        CRITICAL = 3
-        UNKNOWN = 4
-    end
-
-    # Health check result structure
-    struct HealthCheck
-        agent_id::String
-        status::HealthStatus
-        message::String
-        timestamp::DateTime
-        details::Dict{String, Any}
-    end
-
-    # Global monitoring state
-    const MONITOR_TASK = Ref{Union{Task, Nothing}}(nothing)
-    const MONITOR_RUNNING = Ref{Bool}(false)
-    const HEALTH_STATUS = Dict{String, HealthCheck}()
-    const MONITOR_LOCK = ReentrantLock()
-
-    # Start the agent monitoring system
-    function start_monitor()
-        lock(MONITOR_LOCK) do
-            if MONITOR_RUNNING[]
-                @warn "Agent monitor is already running"
-                return false
-            end
-
-            MONITOR_RUNNING[] = true
-            MONITOR_TASK[] = @task _monitor_loop()
-            schedule(MONITOR_TASK[])
-            @info "Agent monitoring system started"
-            return true
-        end
-    end
-
-    # Stop the agent monitoring system
-    function stop_monitor()
-        lock(MONITOR_LOCK) do
-            if !MONITOR_RUNNING[]
-                @warn "Agent monitor is not running"
-                return false
-            end
-
-            MONITOR_RUNNING[] = false
-            # Wait for the task to finish
-            if MONITOR_TASK[] !== nothing && !istaskdone(MONITOR_TASK[])
-                try
-                    wait(MONITOR_TASK[])
-                catch e
-                    @error "Error waiting for monitor task to finish" exception=(e, catch_backtrace())
-                end
-            end
-
-            MONITOR_TASK[] = nothing
-            @info "Agent monitoring system stopped"
-            return true
-        end
-    end
-
-    # Get health status for all agents or a specific agent
-    function get_health_status(agent_id::Union{String, Nothing}=nothing)
-        if isnothing(agent_id)
-            # Return all health statuses
-            return copy(HEALTH_STATUS)
-        else
-            # Return health status for a specific agent
-            return get(HEALTH_STATUS, agent_id, HealthCheck(
-                agent_id, UNKNOWN, "Agent not monitored", now(), Dict{String, Any}()
-            ))
-        end
-    end
-
-    # Internal monitoring loop
-    function _monitor_loop()
-        @info "Agent monitor loop started"
-        check_interval = get_config("agent.monitor_interval", 30) # seconds
-
-        try
-            while MONITOR_RUNNING[]
-                # Check all agents
-                _check_all_agents()
-
-                # Sleep until next check
-                for _ in 1:check_interval
-                    if !MONITOR_RUNNING[]
-                        break
-                    end
-                    sleep(1)
-                end
-            end
-        catch e
-            @error "Agent monitor loop crashed!" exception=(e, catch_backtrace())
-            MONITOR_RUNNING[] = false
-        finally
-            @info "Agent monitor loop stopped"
-        end
-    end
-
-    # Check health of all agents
-    function _check_all_agents()
-        # Get a snapshot of all agents
-        agents_snapshot = Dict{String, Any}()
-        lock(AGENTS_LOCK) do
-            for (id, agent) in AGENTS
-                agents_snapshot[id] = (
-                    id = id,
-                    name = agent.name,
-                    status = agent.status,
-                    thread = get(AGENT_THREADS, id, nothing),
-                    updated = agent.updated
-                )
-            end
-        end
-
-        # Check each agent
-        for (id, agent_data) in agents_snapshot
-            # Skip agents that don't have a thread (not started)
-            thread = agent_data.thread
-            if thread === nothing
-                continue
-            end
-
-            status = HEALTHY
-            message = "Agent is healthy"
-            details = Dict{String, Any}()
-
-            # Check if thread is done but agent status is RUNNING
-            if istaskdone(thread) && agent_data.status == RUNNING
-                status = CRITICAL
-                message = "Agent thread crashed but status is RUNNING"
-                details["thread_status"] = "done"
-                details["agent_status"] = string(agent_data.status)
-
-                # Auto-restart if configured
-                if get_config("agent.auto_restart", false)
-                    @warn "Auto-restarting crashed agent $(agent_data.name) ($id)"
-                    # Call startAgent outside the monitor lock to avoid deadlocks
-                    @async startAgent(id)
-                end
-            end
-
-            # Check for stalled agents (no updates for a long time)
-            time_since_update = now() - agent_data.updated
-            max_stall_time = get_config("agent.max_stall_seconds", 300) # 5 minutes
-            if agent_data.status == RUNNING && time_since_update > Second(max_stall_time)
-                status = WARNING
-                message = "Agent may be stalled (no updates for $(time_since_update))"
-                details["time_since_update"] = time_since_update
-            end
-
-            # Record health check result
-            HEALTH_STATUS[id] = HealthCheck(
-                id, status, message, now(), details
-            )
-
-            # Record metrics
-            if get_config("metrics.enabled", true)
-                record_metric(id, "health_status", Int(status);
-                              type=Metrics.GAUGE,
-                              tags=Dict("agent_name" => agent_data.name))
-            end
-        end
-    end
-end
-
-# Import monitoring functions
-using .AgentMonitor: start_monitor, stop_monitor, get_health_status
-
-# Load state immediately when module is loaded
-_load_state()
-
-# Start the agent monitor if enabled
-if get_config("agent.monitoring_enabled", true)
-    @async start_monitor()
-end
 
 # ----------------------------------------------------------------------
-# ABILITY REGISTRY -------------------------------------------------------
+# CRUD (with locking for AGENTS dict and agent state) -------------------
 # ----------------------------------------------------------------------
-function register_ability(name::String, fn::Function)
-    ABILITY_REGISTRY[name] = fn
-    # also expose as skill (on‑demand)
-    haskey(SKILL_REGISTRY, name) || register_skill(name, fn; schedule=0)
-    @info "Registered ability '$name'" # More specific log
-end
+"""
+    createAgent(cfg::AgentConfig)
 
-# ----------------------------------------------------------------------
-# MEMORY HELPERS ---------------------------------------------------------
-# ----------------------------------------------------------------------
-# Internal function, assumes key exists. Use getAgentMemory for safe access.
-function _touch!(mem::OrderedDict, key)
-    # No need for haskey check if only called internally after confirming existence
-    val = mem[key]; delete!(mem,key); mem[key] = val
-end
+Creates a new agent instance with a unique ID and the given configuration.
+Initializes agent state including memory, queue, skills, task tracking, and locks.
+Initializes pluggable components based on config.
 
-function _enforce_lru!(agent::Agent)
-    max_size = get(agent.config.memory_config, "max_size", 0)::Int # Specify type hint
-    if max_size > 0
-        while length(agent.memory) > max_size
-            # Delete the least recently used item (the first one in OrderedDict)
-            popfirst!(agent.memory) # More efficient than getting keys then deleting
-        end
-    end
-end
+# Arguments
+- `cfg::AgentConfig`: The configuration for the new agent.
 
-# ----------------------------------------------------------------------
-# CRUD (with locking for AGENTS dict) -----------------------------------
-# ----------------------------------------------------------------------
+# Returns
+- `Agent`: The newly created agent instance.
+"""
 function createAgent(cfg::AgentConfig)
     id = "agent-" * randstring(8)
     skills = Dict{String,SkillState}()
-    # Initialize skills based on config
-    for ability_name in cfg.abilities # Abilities are used to find corresponding skills
+    # Initialize skills based on config's abilities (which are used to find skills)
+    for ability_name in cfg.abilities
         sk = get(SKILL_REGISTRY, ability_name, nothing)
         # Only add if a skill with the same name as the ability exists
         sk === nothing && continue
         # Initialize with 0 XP and current time as last exec
-        skills[ability_name] = SkillState(sk, 0.0, now())
+        # Note: If skill has a :once schedule, last_exec should be in the past to run immediately
+        initial_last_exec = now()
+        if sk.schedule !== nothing && sk.schedule.type == :once
+             initial_last_exec = DateTime(0) # Set to epoch to ensure it runs on first check
+        end
+        skills[ability_name] = SkillState(sk, 0.0, initial_last_exec)
     end
+
+    # NEW: Create pluggable components based on config
+    memory_component = _create_memory_component(cfg.memory_config)
+    queue_component = _create_queue_component(cfg.queue_config)
+    llm_component = _create_llm_component(cfg.llm_config)
+    # Swarm connection is typically made when needed or during agent start
 
     ag = Agent(id, cfg.name, cfg.type, CREATED, now(), now(), cfg,
-               OrderedDict{String,Any}(), # Start with empty memory
+               memory_component, # NEW: Use pluggable memory
                Dict{String,Any}[],        # Start with empty task history
                skills,                    # Initialized skills
-               PriorityQueue{Any,Float64}()) # Start with empty queue
+               queue_component, # NEW: Use pluggable queue
+               Dict{String, TaskResult}(), # NEW: Initialize task_results
+               llm_component, # NEW: Initialize LLM integration instance
+               nothing, # Swarm connection starts as nothing
+               ReentrantLock(),           # NEW: Initialize agent-specific lock
+               Condition(),               # NEW: Initialize agent-specific condition
+               nothing,                   # NEW: No error initially
+               nothing,                   # NEW: No error timestamp initially
+               now()                      # NEW: Initial activity timestamp
+              )
 
-    lock(AGENTS_LOCK) do
+    lock(AGENTS_LOCK) do # Lock the global AGENTS dict to add the new agent
         AGENTS[id] = ag
     end
-    auto_persist && _save_state() # Save state after modification
+
+    # Initialize metrics for the new agent using the AgentMetrics module
+    AgentMetrics.init_agent_metrics(id)
+
+    # State is saved periodically by the persistence task, or on stop/delete.
+    # Explicit save here is optional but ensures newly created agents are persisted immediately.
+    # Persistence._save_state() # Avoid saving on every creation if frequent
+
     @info "Created agent $(cfg.name) ($id)"
     return ag
 end
 
+"""
+    getAgent(id::String)::Union{Agent, Nothing}
+
+Retrieves an agent instance by its ID.
+
+# Arguments
+- `id::String`: The ID of the agent to retrieve.
+
+# Returns
+- `Agent` if found, otherwise `nothing`.
+"""
 function getAgent(id::String)::Union{Agent, Nothing}
-    lock(AGENTS_LOCK) do
+    lock(AGENTS_LOCK) do # Lock the global AGENTS dict for lookup
         return get(AGENTS, id, nothing)
     end
 end
 
+"""
+    listAgents(; filter_type=nothing, filter_status=nothing)
+
+Lists all agents, optionally filtered by type or status.
+
+# Arguments
+- `filter_type::Union{AgentType, Nothing}`: Optional filter by agent type.
+- `filter_status::Union{AgentStatus, Nothing}`: Optional filter by agent status.
+
+# Returns
+- `Vector{Agent}`: A list of matching agent instances.
+"""
 function listAgents(;filter_type=nothing, filter_status=nothing)
     agents_list = Agent[]
-    lock(AGENTS_LOCK) do
-        # Create a copy to avoid holding lock during filtering if complex
+    lock(AGENTS_LOCK) do # Lock the global AGENTS dict to get a snapshot
+        # Create a copy of values to avoid holding lock during filtering
         agents_list = collect(values(AGENTS))
     end
 
-    # Apply filters outside the lock
+    # Apply filters outside the global lock
     if filter_type !== nothing
         filter!(a -> a.type == filter_type, agents_list)
     end
@@ -883,1093 +504,1633 @@ function listAgents(;filter_type=nothing, filter_status=nothing)
     return agents_list
 end
 
+"""
+    updateAgent(id::String, upd::Dict{String,Any})
+
+Updates the configuration parameters of an agent.
+Note: This function does NOT change agent status. Use life-cycle functions for that.
+Only 'name' and 'config.parameters' can be updated directly.
+
+# Arguments
+- `id::String`: The ID of the agent to update.
+- `upd::Dict{String,Any}`: Dictionary containing fields to update.
+
+# Returns
+- `Agent` if updated, otherwise `nothing`.
+"""
 function updateAgent(id::String, upd::Dict{String,Any})
-    # Retrieve agent first (uses lock internally)
-    ag = getAgent(id)
+    ag = getAgent(id) # Uses global lock internally
     ag === nothing && return nothing
 
-    # Lock the specific agent if fine-grained locking is needed,
-    # or use the global lock if modifying shared structures or status
-    # For simplicity here, assume modifications are safe or handled by caller context
-    # A lock per agent could be added to the Agent struct if needed: `lock::ReentrantLock`
+    # Basic input validation for update payload
+    if !isa(upd, Dict)
+         @warn "updateAgent received invalid update payload for agent $id. Expected Dict." upd
+         return nothing
+    end
 
     updated = false
-    if haskey(upd,"name") && ag.name != upd["name"]
-        ag.name = upd["name"]; updated = true
-    end
-     # Be careful allowing direct status updates via API, might conflict with internal state machine
-    if haskey(upd,"status")
-        new_status_val = upd["status"]
-        try
-            new_status = isa(new_status_val, AgentStatus) ? new_status_val : AgentStatus(Int(new_status_val))
-             if ag.status != new_status
-                 # TODO: Add checks here - e.g., prevent setting RUNNING directly?
-                 # This should ideally only be set by startAgent/stopAgent internal logic
-                 @warn "Agent status for $id externally set to $new_status. Internal state might be inconsistent."
-                 ag.status = new_status; updated = true
-             end
-        catch e
-             @warn "Invalid status value provided for agent $id: $new_status_val"
+    # Acquire agent-specific lock before modifying its state/config
+    lock(ag.lock) do
+        if haskey(upd,"name")
+            new_name = upd["name"]
+            if isa(new_name, AbstractString) && !isempty(new_name) && ag.name != new_name
+                 ag.name = new_name; updated = true
+                 @info "Agent $id name updated to $(ag.name)"
+            elseif !isa(new_name, AbstractString) || isempty(new_name)
+                 @warn "Invalid or empty name provided for agent $id update." new_name
+            end
         end
-    end
-    if haskey(upd,"config") && haskey(upd["config"],"parameters")
-        # Only merge parameters for now, config itself is immutable struct
-        # If config needs full update, need AgentConfig constructor logic
-        params_to_merge = get(upd["config"],"parameters", Dict())
-        if !isempty(params_to_merge)
-            merge!(ag.config.parameters, params_to_merge); updated = true
-             @info "Updated parameters for agent $id"
-        end
-    end
+        # Removed direct status update capability - use start/stop/pause/resume
 
-    if updated
-        ag.updated = now()
-        auto_persist && _save_state() # Save state if anything changed
-        @info "Agent $id updated."
-    end
+        if haskey(upd,"config")
+            config_upd = upd["config"]
+            if isa(config_upd, Dict) && haskey(config_upd,"parameters")
+                # Only merge parameters for now, AgentConfig struct is immutable
+                params_to_merge = get(config_upd,"parameters", Dict())
+                if !isempty(params_to_merge)
+                    # Basic validation: ensure params_to_merge is a Dict
+                    if isa(params_to_merge, Dict)
+                        merge!(ag.config.parameters, params_to_merge); updated = true
+                        @info "Updated parameters for agent $id"
+                    else
+                        @warn "Invalid format for config.parameters update for agent $id. Expected Dict."
+                    end
+                end
+            elseif isa(config_upd, Dict)
+                 # Handle other potential config updates here if AgentConfig were mutable
+                 # For now, log warning if 'config' key is present but not 'parameters'
+                 @warn "Agent $id update included 'config' key but no 'parameters' sub-key or invalid format." config_upd
+            else
+                 @warn "Invalid format for 'config' update for agent $id. Expected Dict." config_upd
+            end
+        end
+
+        if updated
+            ag.updated = now()
+            ag.last_activity = now() # Update activity timestamp on config change
+            # State is saved periodically or on stop/delete.
+            # Explicit save here is optional depending on how critical immediate persistence is.
+            # Persistence._save_state()
+        end
+    end # Release agent-specific lock
+
+    # Return the agent object regardless if updated or not (if found)
     return ag
 end
 
+"""
+    deleteAgent(id::String)::Bool
+
+Deletes an agent by its ID, stopping its task if running.
+
+# Arguments
+- `id::String`: The ID of the agent to delete.
+
+# Returns
+- `true` if the agent was found and deleted, `false` otherwise.
+"""
 function deleteAgent(id::String)::Bool
-    lock(AGENTS_LOCK) do
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "deleteAgent received invalid or empty ID." id
+        return false
+    end
+
+    lock(AGENTS_LOCK) do # Lock the global AGENTS dict for deletion
         haskey(AGENTS, id) || return false
+        ag = AGENTS[id] # Get reference before deleting from dict
+
         # Stop the agent task *before* removing from dict
         # stopAgent needs to handle the case where agent doesn't exist in AGENT_THREADS
-        stopAgent(id) # stopAgent handles missing agent/thread gracefully
+        # It also needs to handle its own locking.
+        stopAgent(id) # stopAgent handles missing agent/thread gracefully and saves state
+
+        # Clean up metrics for the deleted agent using the AgentMetrics module
+        AgentMetrics.reset_metrics(id)
+        # Monitor module handles removing from its cache
+        # AgentMonitor.get_health_status(id) # Monitor handles this
 
         delete!(AGENTS, id)
-        # Also clean up thread entry if it exists
+        # Also clean up thread entry if it exists (stopAgent should handle this too)
         haskey(AGENT_THREADS, id) && delete!(AGENT_THREADS, id)
 
-        auto_persist && _save_state() # Save state after deletion
+        # State is saved by stopAgent. If agent was already stopped, save here.
+        # Persistence._save_state() # Redundant if stopAgent always saves
+
         @info "Deleted agent $id"
         return true
     end
 end
 
+"""
+    cloneAgent(id::String, new_name::String; parameter_overrides::Dict{String, Any}=Dict())
+
+Creates a new agent by cloning the configuration of an existing agent.
+
+# Arguments
+- `id::String`: The ID of the agent to clone the configuration from.
+- `new_name::String`: The name for the new agent.
+- `parameter_overrides::Dict{String, Any}`: Optional parameters to override in the new agent's configuration.
+
+# Returns
+- The newly created Agent instance or nothing if the source agent is not found.
+"""
+function cloneAgent(id::String, new_name::String; parameter_overrides::Dict{String, Any}=Dict())
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "cloneAgent received invalid or empty source ID." id
+        return nothing
+    end
+     if !isa(new_name, AbstractString) || isempty(new_name)
+        @warn "cloneAgent received invalid or empty new name." new_name
+        return nothing
+    end
+     if !isa(parameter_overrides, Dict)
+         @warn "cloneAgent received invalid parameter_overrides payload. Expected Dict." parameter_overrides
+         return nothing
+     end
+
+
+    source_agent = getAgent(id) # Uses global lock internally
+    source_agent === nothing && (@warn "cloneAgent: Source agent $id not found"; return nothing)
+
+    # Acquire source agent lock to get a consistent config snapshot (config is immutable, but good practice)
+    lock(source_agent.lock) do
+        # Create a new config based on the source agent's config
+        new_params = deepcopy(source_agent.config.parameters)
+        merge!(new_params, parameter_overrides) # Apply overrides
+
+        new_config = AgentConfig(
+            new_name,
+            source_agent.config.type;
+            abilities = deepcopy(source_agent.config.abilities), # Deepcopy mutable fields
+            chains = deepcopy(source_agent.config.chains),
+            parameters = new_params,
+            llm_config = deepcopy(source_agent.config.llm_config),
+            memory_config = deepcopy(source_agent.config.memory_config),
+            queue_config = deepcopy(source_agent.config.queue_config), # NEW: Clone queue config
+            max_task_history = source_agent.config.max_task_history # Max history is usually per type/config
+        )
+
+        # Create the new agent using the new config
+        return createAgent(new_config)
+    end # Release source agent lock
+end
+
 
 # ----------------------------------------------------------------------
-# INTERNAL LOOP (Handles PAUSED state) ---------------------------------
+# INTERNAL LOOP (Handles PAUSED state and uses Condition) --------------
 # ----------------------------------------------------------------------
+# Internal function, assumes agent lock is held by the calling context (_agent_loop)
 function _process_skill!(ag::Agent, sstate::SkillState)
+    # Skill processing logic (called from _agent_loop)
+    # This function assumes the agent.lock is held by the caller (_agent_loop)
+    # Any modifications to agent state within skill functions called by _process_skill!
+    # would also need to acquire the agent.lock, or the skill function itself
+    # could be designed to receive the locked agent.
+
     # XP decay using configurable decay factor
-    sstate.xp *= get_config("agent.xp_decay_rate", 0.999)
+    sstate.xp *= Config.get_config("agent.xp_decay_rate", 0.999)
     sk = sstate.skill # Access skill definition
-    if sk.schedule > 0 # Only process scheduled skills
-        diff = now() - sstate.last_exec
-        if diff >= Millisecond(round(Int, sk.schedule * 1000)) # Use Millisecond for comparison
+
+    if sk.schedule !== nothing # Only process scheduled skills
+        should_run = false
+        current_time = now()
+
+        if sk.schedule.type == :periodic
+             diff = current_time - sstate.last_exec
+             # Check if schedule time has passed, allowing for small floating point inaccuracies
+             if diff >= Millisecond(round(Int, sk.schedule.value * 1000)) - Millisecond(10)
+                 should_run = true
+             end
+        elseif sk.schedule.type == :once
+             # Run if last_exec is epoch time (indicating it hasn't run) and the scheduled time is past
+             if sstate.last_exec == DateTime(0) && current_time >= sk.schedule.value
+                 should_run = true
+             end
+        elseif sk.schedule.type == :cron
+             # Placeholder for cron scheduling logic
+             # Requires a cron parsing/checking library (e.g. Cron.jl)
+            # Cron scheduling logic using Cron.jl
+            # sk.schedule.value is expected to be the cron string e.g. "0 * * * *"
+            if isa(sk.schedule.value, String)
+                try
+                    # Cron.isdue checks if the cron expression is due between last_exec and current_time
+                    # If last_exec is very old, it might trigger multiple times if not handled carefully by skill logic
+                    # or by ensuring last_exec is updated promptly.
+                    # Cron.jl's isdue typically checks if *any* scheduled time falls in (last_exec, current_time].
+                    if Cron.isdue(sk.schedule.value, sstate.last_exec) # Check against last_exec time
+                        should_run = true
+                    end
+                catch e
+                    @error "Error parsing or checking cron schedule string '$(sk.schedule.value)' for skill '$(sk.name)'" exception=(e, catch_backtrace())
+                    # Consider setting agent to ERROR or disabling this skill if cron string is persistently bad.
+                    should_run = false 
+                end
+            else
+                @warn "Cron schedule value for skill '$(sk.name)' is not a string. Cron scheduling skipped."
+                should_run = false
+            end
+        elseif sk.schedule.type == :event
+             # Event-based skills are not run by the scheduler loop,
+             # they would be triggered by an external event handler (e.g., in Swarm module)
+             should_run = false
+        else
+             @warn "Unknown schedule type for skill '$(sk.name)': $(sk.schedule.type)"
+             should_run = false
+        end
+
+
+        if should_run
             try
-                @debug "Running scheduled skill '$(sk.name)' for agent $(ag.name)"
+                @debug "Running scheduled skill '$(sk.name)' for agent $(ag.name) ($ag.id)"
+
                 # --- Execute the skill function ---
-                sk.fn(ag) # Pass the agent object to the skill function
+                # Pass the agent. Ability function should acquire ag.lock if needed.
+                # Skills typically don't take a task dict, but can access agent state.
+                sk.fn(ag)
                 # ------------------------------------
+
                 sstate.xp += 1 # Increase XP on success
+                ag.last_activity = now() # Update activity on successful skill execution
+                AgentMetrics.record_metric(ag.id, "skills_executed", 1; type=AgentMetrics.COUNTER, tags=Dict("skill_name" => sk.name))
+
             catch e
                 sstate.xp -= 2 # Decrease XP on error (consider magnitude)
-                @error "Skill $(sk.name) error in agent $(ag.name)" exception=(e, catch_backtrace())
-                 # Maybe set agent status to ERROR? Depends on severity desired.
-                 # ag.status = ERROR
+                @error "Skill $(sk.name) error in agent $(ag.name) ($ag.id)" exception=(e, catch_backtrace())
+                # Optionally set agent status to ERROR on critical skill failure
+                # if should_set_error(e) # Define a helper function for critical errors
+                #     ag.status = ERROR
+                #     ag.updated = now()
+                #     ag.last_error = e
+                #     ag.last_error_timestamp = now()
+                #     @error "Agent $(ag.name) ($ag.id) set to ERROR due to skill failure."
+                # end
+                AgentMetrics.record_metric(ag.id, "skill_errors", 1; type=AgentMetrics.COUNTER, tags=Dict("skill_name" => sk.name))
             end
-            sstate.last_exec = now() # Update last execution time regardless of success/failure
+            sstate.last_exec = current_time # Update last execution time regardless of success/failure
         end
     end
 end
 
-# *** MODIFIED: Agent loop handles PAUSED state ***
+# Internal function: The main execution loop for an agent. Runs in its own task.
 function _agent_loop(ag::Agent)
     @info "Agent loop started for $(ag.name) ($ag.id)"
     try
-        while ag.status != STOPPED && ag.status != ERROR # Keep running unless stopped or errored
-            # --- Check for PAUSED status ---
-            if ag.status == PAUSED
-                # Agent is paused, wait briefly and check again
-                # TODO: Replace sleep with a Condition wait for better efficiency
-                sleep(PAUSED_SLEEP_MS / 1000) # Convert ms to seconds
-                continue # Skip the rest of the loop iteration
-            end
-            # -------------------------------
+        # The loop runs as long as the status is not STOPPED or ERROR
+        while lock(ag.lock) do ag.status != STOPPED && ag.status != ERROR end
+            work_done_this_iteration = false
 
-            active = false # Flag to see if any work was done in this iteration
+            # Acquire lock for this iteration's processing
+            lock(ag.lock) do
+                # --- Check for PAUSED status ---
+                if ag.status == PAUSED
+                    # Agent is paused, wait on the condition. Will be notified by resumeAgent.
+                    @debug "Agent $(ag.name) ($ag.id) is paused. Waiting..."
+                    ag.last_activity = now() # Update activity before waiting
+                    # Release the lock while waiting on the condition
+                    wait(ag.condition, ag.lock)
+                    # Lock is re-acquired upon waking
+                    @debug "Agent $(ag.name) ($ag.id) woke up."
+                    # After waking, the loop condition `ag.status != STOPPED && ag.status != ERROR` is checked again.
+                    return # Skip the rest of this iteration if paused
+                end
+                # -------------------------------
 
-            # 1) Scheduled skills
-            # Iterate over a copy of keys in case skills are modified during iteration (less likely here)
-            current_skill_keys = collect(keys(ag.skills))
-            for skill_name in current_skill_keys
-                 sstate = get(ag.skills, skill_name, nothing) # Re-fetch in case deleted
-                 sstate === nothing && continue
-                 _process_skill!(ag, sstate)
-                 # Note: _process_skill! only runs if schedule time has passed
-            end
+                # 1) Scheduled skills
+                # Iterate over a copy of keys in case skills are modified (less likely here)
+                current_skill_keys = collect(keys(ag.skills))
+                for skill_name in current_skill_keys
+                     sstate = get(ag.skills, skill_name, nothing) # Re-fetch in case deleted
+                     sstate === nothing && continue
+                     # _process_skill! assumes agent.lock is held
+                     _process_skill!(ag, sstate)
+                     # Note: _process_skill! only runs if its schedule is due
+                end
 
-            # 2) Queued messages
-            if !isempty(ag.queue)
-                active = true # Work done: processed queue item
-                msg, _ = peek(ag.queue) # Priority included in peek result
-                dequeue!(ag.queue)      # Remove from queue
+                # 2) Queued messages (now processing task_ids)
+                # Use isempty and length from the AbstractAgentQueue interface
+                if !isempty(ag.queue)
+                    work_done_this_iteration = true # Work found
+                    @debug "Agent $(ag.name) ($ag.id) processing queue. Queue size: $(length(ag.queue))"
 
-                ability_name = get(msg, "ability", "") # Assume message is a Dict
-                if !isempty(ability_name)
-                    f = get(ABILITY_REGISTRY, ability_name, nothing)
-                    if f !== nothing
-                        try
-                            @debug "Executing ability '$ability_name' from queue for agent $(ag.name)"
-                            f(ag, msg) # Execute the ability function
-                        catch e
-                            @error "Error executing ability '$ability_name' from queue for agent $(ag.name)" exception=(e, catch_backtrace())
-                            # Decide if this error should stop the agent
-                            # ag.status = ERROR
+                    # Dequeue task_id using the AbstractAgentQueue interface
+                    task_id = dequeue!(ag.queue)
+
+                    # Retrieve TaskResult using task_id
+                    task_result = get(ag.task_results, task_id, nothing)
+                    if task_result === nothing
+                        @warn "Dequeued unknown or missing task result for ID $task_id for agent $(ag.name) ($ag.id). Skipping."
+                        # Record a metric for invalid queue items
+                        AgentMetrics.record_metric(ag.id, "queue_invalid_items", 1; type=AgentMetrics.COUNTER)
+                        AgentMetrics.record_metric(ag.id, "queue_size", length(ag.queue); type=AgentMetrics.GAUGE) # Update queue size metric
+                        return # Continue to the next iteration
+                    end
+
+                    # If task was cancelled externally, skip execution
+                    if task_result.status == TASK_CANCELLED
+                        @debug "Task $task_id for agent $(ag.name) ($ag.id) was cancelled. Skipping execution."
+                        AgentMetrics.record_metric(ag.id, "tasks_cancelled", 1; type=AgentMetrics.COUNTER)
+                        AgentMetrics.record_metric(ag.id, "queue_size", length(ag.queue); type=AgentMetrics.GAUGE) # Update queue size metric
+                        return # Continue to the next iteration
+                    end
+
+                    # Update TaskResult status to RUNNING
+                    task_result.status = TASK_RUNNING
+                    task_result.start_time = now()
+
+                    task = task_result.input_task # Get the original task payload
+
+                    ability_name = get(task, "ability", "")
+                    if !isempty(ability_name)
+                        f = get(ABILITY_REGISTRY, ability_name, nothing)
+                        if f !== nothing
+                            try
+                                @debug "Executing queued ability '$ability_name' ($task_id) for agent $(ag.name) ($ag.id)"
+                                # --- Execute the ability function ---
+                                # Pass the agent and task. Ability function should acquire ag.lock if needed.
+                                output = f(ag, task)
+                                # ------------------------------------
+
+                                # Update TaskResult on success
+                                task_result.status = TASK_COMPLETED
+                                task_result.end_time = now()
+                                task_result.output_result = output
+
+                                ag.last_activity = now() # Update activity
+
+                                # --- Add to Task History (with capping) ---
+                                max_hist = ag.config.max_task_history
+                                if max_hist > 0
+                                    # Store task_id in history entry for traceability
+                                    history_entry = Dict("timestamp"=>now(), "task_id"=>task_id, "input"=>task, "output"=>output)
+                                    push!(ag.task_history, history_entry)
+                                    while length(ag.task_history) > max_hist
+                                        popfirst!(ag.task_history)
+                                    end
+                                end
+                                # ------------------------------------------
+
+                                AgentMetrics.record_metric(ag.id, "tasks_executed_queued", 1; type=AgentMetrics.COUNTER, tags=Dict("ability_name" => ability_name))
+                                AgentMetrics.record_metric(ag.id, "queue_size", length(ag.queue); type=AgentMetrics.GAUGE) # Update queue size metric
+
+                            catch e
+                                @error "Error executing queued ability '$ability_name' ($task_id) for agent $(ag.name) ($ag.id)" exception=(e, catch_backtrace())
+                                # Update TaskResult on failure
+                                task_result.status = TASK_FAILED
+                                task_result.end_time = now()
+                                task_result.error_details = e
+
+                                # Set agent status to ERROR on ability failure
+                                ag.status = ERROR
+                                ag.updated = now()
+                                ag.last_error = e
+                                ag.last_error_timestamp = now()
+                                @error "Agent $(ag.name) ($ag.id) set to ERROR due to queued task failure."
+                                # The loop will exit in the next iteration check
+
+                                AgentMetrics.record_metric(ag.id, "task_errors_queued", 1; type=AgentMetrics.COUNTER, tags=Dict("ability_name" => ability_name))
+                            end
+                        else
+                            @warn "Unknown ability '$ability_name' in queued task $task_id for agent $(ag.name) ($ag.id)"
+                            # Update TaskResult for invalid ability
+                            task_result.status = TASK_FAILED
+                            task_result.end_time = now()
+                            task_result.error_details = ErrorException("Unknown ability: '$ability_name'")
+                             AgentMetrics.record_metric(ag.id, "task_errors_queued", 1; type=AgentMetrics.COUNTER, tags=Dict("ability_name" => ability_name, "error_type" => "unknown_ability"))
                         end
                     else
-                        @warn "Unknown ability '$ability_name' requested in queue for agent $(ag.name)"
+                        @warn "Queued task $task_id has no 'ability' key for agent $(ag.name) ($ag.id)"
+                         # Update TaskResult for invalid task payload
+                        task_result.status = TASK_FAILED
+                        task_result.end_time = now()
+                        task_result.error_details = ErrorException("Task has no 'ability' key")
+                        AgentMetrics.record_metric(ag.id, "task_errors_queued", 1; type=AgentMetrics.COUNTER, tags=Dict("error_type" => "missing_ability_key"))
                     end
+                end # end queue processing
+
+                # --- Intelligent Waiting ---
+                # If no work was done, wait on the condition.
+                # This task will be woken by new queue items or status changes (like resume).
+                if !work_done_this_iteration
+                    @debug "Agent $(ag.name) ($ag.id) idle. Waiting..."
+                    ag.last_activity = now() # Update activity before waiting
+                    # Release the lock while waiting on the condition
+                    wait(ag.condition, ag.lock)
+                    # Lock is re-acquired upon waking
+                    @debug "Agent $(ag.name) ($ag.id) woke up."
                 else
-                    @warn "Message dequeued with no 'ability' key for agent $(ag.name): $msg"
+                    # If work was done, yield to allow other tasks to run, then continue loop
+                    yield()
                 end
-            end
 
-            # --- Intelligent Sleep ---
-            # TODO: Replace this fixed sleep with dynamic waiting based on:
-            # 1. Time until the next scheduled skill needs to run.
-            # 2. Waiting on a notification (e.g., Condition) for new queue messages.
-            # This avoids busy-waiting and improves responsiveness.
-            if !active
-                 sleep(DEFAULT_SLEEP_MS / 1000) # Sleep only if no work was done (convert ms to seconds)
-            else
-                 yield() # Yield to allow other tasks to run if work was done
-            end
-            # -------------------------
+            end # Release agent.lock
 
-        end # End while loop
+            # The loop condition is checked again at the start of the next iteration.
+
+        end # End while loop (exits if status is STOPPED or ERROR)
+
     catch e
-        ag.status = ERROR
-        ag.updated = now()
-        @error "Agent $(ag.name) ($ag.id) loop crashed!" exception=(e, catch_backtrace())
+        # This catch block handles errors that escape the inner processing (less likely with inner try/catch)
+        lock(ag.lock) do # Acquire lock to update status on crash
+            ag.status = ERROR
+            ag.updated = now()
+            ag.last_error = e
+            ag.last_error_timestamp = now()
+            @error "Agent $(ag.name) ($ag.id) loop crashed unexpectedly!" exception=(e, catch_backtrace())
+        end # Release lock
         # Rethrow? Or just log and let the status indicate error?
         # rethrow(e)
     finally
-         # Ensure status is updated if loop terminates normally
-         # If loop exited due to status change (STOPPED/ERROR), keep that status
-         if ag.status != STOPPED && ag.status != ERROR
-             ag.status = STOPPED
-             ag.updated = now()
-         end
-         @info "Agent loop stopped for $(ag.name) ($ag.id). Final status: $(ag.status)"
-         # Clean up thread entry? Should be done by deleteAgent or perhaps a monitor task
-         # lock(AGENTS_LOCK) do
-         #     haskey(AGENT_THREADS, ag.id) && delete!(AGENT_THREADS, ag.id)
-         # end
+        # This block runs when the task finishes (either normally or via error)
+        lock(ag.lock) do # Acquire lock to ensure final status update is safe
+            # Ensure status is updated if loop terminates normally (e.g., by stopAgent setting status)
+            # If loop exited due to status change (STOPPED/ERROR), keep that status
+            if ag.status != STOPPED && ag.status != ERROR
+                ag.status = STOPPED
+                ag.updated = now()
+                @info "Agent loop finished for $(ag.name) ($ag.id). Setting status to STOPPED."
+            else
+                 @info "Agent loop finished for $(ag.name) ($ag.id). Final status: $(ag.status)."
+            end
+            ag.last_activity = now() # Final activity timestamp
+        end # Release lock
+
+        # Clean up thread entry from global dict (under global lock)
+        lock(AGENTS_LOCK) do
+            haskey(AGENT_THREADS, ag.id) && delete!(AGENT_THREADS, ag.id) # Use 'ag.id' here
+        end
+
+        # Save state after an agent task finishes (especially if it ended in STOPPED/ERROR)
+        # Persistence._save_state() # Call the Persistence module's save function
+        lock(AGENTS_LOCK) do # _save_state requires AGENTS_LOCK
+            Persistence._save_state()
+        end
+
+        # Call the separate auto-restart handler function
+        _handle_auto_restart(ag)
     end
 end
 
 
 # ----------------------------------------------------------------------
-# LIFE‑CYCLE (Pause/Resume now works with modified loop) ---------------
+# LIFE-CYCLE (Pause/Resume now works with Condition) -------------------
 # ----------------------------------------------------------------------
+"""
+    startAgent(id::String)::Bool
+
+Starts the execution loop for an agent.
+
+# Arguments
+- `id::String`: The ID of the agent to start.
+
+# Returns
+- `true` if the agent was started or is already running/initializing/paused, `false` otherwise.
+"""
 function startAgent(id::String)::Bool
-    ag = getAgent(id)
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "startAgent received invalid or empty ID." id
+        return false
+    end
+
+    ag = getAgent(id) # Uses global lock internally
     ag === nothing && (@warn "startAgent: Agent $id not found"; return false)
 
-    # Check current status and task state
-    lock(AGENTS_LOCK) do # Lock to safely check/update AGENT_THREADS
-        current_task = get(AGENT_THREADS, id, nothing)
-        if current_task !== nothing && !istaskdone(current_task)
-             # If paused, resumeAgent should be used. If running, do nothing.
-             if ag.status == RUNNING
-                 @warn "Agent $id ($(ag.name)) is already running."
-                 return true # Indicate it's effectively running
-             elseif ag.status == PAUSED
-                  @warn "Agent $id ($(ag.name)) is paused. Use resumeAgent() to resume."
-                  return false # Indicate failure to start because it's paused
-             else
-                  # Should not happen if status reflects task state, but handle defensively
-                  @warn "Agent $id ($(ag.name)) has status $(ag.status) but task exists and is not done. Attempting to stop old task."
-                  # Force stop might be needed here if wait hangs
-                  ag.status = STOPPED
-                  try; wait(current_task); catch e; @error "Error waiting for old task of $id" exception=e; end
-             end
+    # Acquire agent-specific lock to check/update status and thread
+    lock(ag.lock) do
+        # Get the task reference safely under global lock if needed, but status check is primary
+        # current_task = lock(AGENTS_LOCK) do get(AGENT_THREADS, id, nothing) end
+
+        if ag.status == RUNNING
+             @warn "Agent $id ($(ag.name)) is already running."
+             return true # Indicate it's effectively running
+        elseif ag.status == PAUSED
+             @warn "Agent $id ($(ag.name)) is paused. Use resumeAgent() to resume."
+             return false # Indicate failure to start because it's paused
+        elseif ag.status == INITIALIZING
+             @warn "Agent $id ($(ag.name)) is already initializing."
+             return true # Indicate it's effectively starting
+        elseif ag.status == ERROR
+             @warn "Agent $id ($(ag.name)) is in ERROR state. Cannot start directly. Reset agent status first."
+             return false # Cannot start from ERROR without reset/recreate
         end
 
-        # Okay to start
-        ag.status = INITIALIZING
-        ag.updated = now()
+        # If status is CREATED or STOPPED, it's okay to start
         @info "Starting agent $(ag.name) ($id)..."
+        ag.status = INITIALIZING # Set status under lock
+        ag.updated = now()
+        ag.last_activity = now() # Reset activity timestamp
 
         # Create and schedule the new task
-        AGENT_THREADS[id] = @task begin
+        # This task needs to update AGENT_THREADS under the global lock
+        task = @task begin
             try
                 # Set status to RUNNING *inside* the task, after initialization phase (if any)
-                ag.status = RUNNING
-                ag.updated = now()
+                # Acquire agent lock for status change
+                lock(ag.lock) do
+                    ag.status = RUNNING
+                    ag.updated = now()
+                    ag.last_activity = now() # Reset activity on entering RUNNING
+                    @info "Agent $(ag.name) ($ag.id) status set to RUNNING."
+                    # Notify the condition in case the loop was waiting while status was INITIALIZING
+                    notify(ag.condition)
+                end # Release agent lock
+
                 _agent_loop(ag) # Run the main loop
+
             catch task_err
-                 # This catch block might be redundant if _agent_loop handles its errors
-                 @error "Unhandled error in agent task for $id ($(ag.name))" exception=(task_err, catch_backtrace())
-                 ag.status = ERROR # Ensure status reflects error
-                 ag.updated = now()
+                # This catch block handles errors that escape _agent_loop's try/finally
+                lock(ag.lock) do # Acquire agent lock for status change
+                    ag.status = ERROR # Ensure status reflects error
+                    ag.updated = now()
+                    ag.last_error = task_err
+                    ag.last_error_timestamp = now()
+                    @error "Unhandled error in agent task for $id ($(ag.name))" exception=(task_err, catch_backtrace())
+                end # Release agent lock
             finally
-                 # Final status update is handled inside _agent_loop's finally block now
-                 # Ensure state is saved if auto_persist is on and loop finishes
-                 # auto_persist && _save_state() # Might save too often, rely on CRUD ops?
+                # The _agent_loop's finally block handles final status and AGENT_THREADS cleanup
+                @info "Agent task finished for $(ag.name) ($id)."
             end
         end
-        schedule(AGENT_THREADS[id])
-        return true
-    end # unlock AGENTS_LOCK
-end
 
-function stopAgent(id::String)::Bool
-    ag = getAgent(id)
-    # No agent found, nothing to stop
-    ag === nothing && return true # Arguably, goal (agent not running) is achieved
-
-    current_task = lock(AGENTS_LOCK) do
-        get(AGENT_THREADS, id, nothing)
-    end
-
-    if current_task === nothing || istaskdone(current_task)
-        # Task doesn't exist or is already done
-        if ag.status == RUNNING || ag.status == PAUSED || ag.status == INITIALIZING
-            @warn "Agent $id ($(ag.name)) status is $(ag.status), but no active task found. Setting status to STOPPED."
-            ag.status = STOPPED
-            ag.updated = now()
-            auto_persist && _save_state()
+        # Store the task reference under global lock
+        lock(AGENTS_LOCK) do
+             AGENT_THREADS[id] = task
         end
-        return true # Agent is effectively stopped
+
+        schedule(task) # Schedule the task
+        return true
+    end # Release agent-specific lock
+end
+
+"""
+    stopAgent(id::String)::Bool
+
+Signals an agent's execution loop to stop and waits for it to finish.
+
+# Arguments
+- `id::String`: The ID of the agent to stop.
+
+# Returns
+- `true` if the agent was stopped or is already stopped/errored/not found, `false` otherwise (e.g., if waiting failed).
+"""
+function stopAgent(id::String)::Bool
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "stopAgent received invalid or empty ID." id
+        return false
     end
 
-    # Task exists and is not done, signal it to stop
-    if ag.status != STOPPED && ag.status != ERROR
+    ag = getAgent(id) # Uses global lock internally
+    # No agent found, nothing to stop - goal is achieved
+    ag === nothing && return true
+
+    # Acquire agent-specific lock to check/update status and signal
+    lock(ag.lock) do
+        if ag.status == STOPPED || ag.status == ERROR
+            @warn "Agent $id ($(ag.name)) is already in status $(ag.status). No action needed."
+            return true # Already achieved
+        end
+
         @info "Stopping agent $(ag.name) ($id)..."
-        ag.status = STOPPED # Signal the loop to exit
+        ag.status = STOPPED # Signal the loop to exit (under lock)
         ag.updated = now()
-        # Don't save state here yet, wait for loop to finish maybe?
-    end
+        ag.last_activity = now() # Update activity timestamp
 
-    # Wait for the task to finish (with a timeout?)
-    try
-        # TODO: Add a timeout to the wait to prevent hanging indefinitely
-        wait(current_task)
-        @info "Agent $(ag.name) ($id) task finished."
-    catch e
-        @error "Error occurred while waiting for agent $id ($(ag.name)) task to stop." exception=(e, catch_backtrace())
-        # Force status to error? Or keep as stopped?
-        ag.status = ERROR
-        ag.updated = now()
-    end
+        # Notify the condition to wake up the agent loop if it's waiting
+        notify(ag.condition)
 
-    # Final state save after ensuring task is stopped/waited for
-    auto_persist && _save_state()
-    return true
+        # Get the task reference (requires global lock access)
+        current_task = lock(AGENTS_LOCK) do
+            get(AGENT_THREADS, id, nothing)
+        end
+
+        if current_task === nothing || istaskdone(current_task)
+            @warn "Agent $id ($(ag.name)) status was $(ag.status), but no active task found. Setting status to STOPPED."
+            # Status is already set to STOPPED under ag.lock above.
+            # Ensure thread entry is clean (done in task finally block, but defensive check)
+             lock(AGENTS_LOCK) do
+                haskey(AGENT_THREADS, id) && delete!(AGENT_THREADS, id)
+             end
+            # Save state immediately as the task won't do it
+            lock(AGENTS_LOCK) do # _save_state requires AGENTS_LOCK
+                Persistence._save_state()
+            end
+            return true # Agent is effectively stopped
+        end
+
+        # Task exists and is not done, wait for it to finish
+        # Release agent lock while waiting to avoid deadlocks if the task needs the lock
+        unlock(ag.lock)
+        try
+            # TODO: Add a timeout to the wait to prevent hanging indefinitely
+            wait(current_task)
+            @info "Agent $(ag.name) ($id) task finished after stop signal."
+            return true
+        catch e
+            @error "Error occurred while waiting for agent $id ($(ag.name)) task to stop." exception=(e, catch_backtrace())
+            # Re-acquire lock to update status if wait failed
+            lock(ag.lock) do
+                 ag.status = ERROR # Indicate stopping failed or task ended in error
+                 ag.updated = now()
+                 ag.last_error = e
+                 ag.last_error_timestamp = now()
+            end
+            return false # Indicate stopping process failed
+        finally
+             # Ensure lock is re-acquired if an error occurred in wait
+             islocked(ag.lock) || lock(ag.lock)
+             # The task's finally block should handle AGENT_THREADS cleanup and state saving.
+             # If wait failed, the task might still be running or in a bad state.
+        end
+    end # Release agent-specific lock (or re-acquired in finally)
 end
 
-# *** MODIFIED: pauseAgent just sets the flag ***
+"""
+    pauseAgent(id::String)::Bool
+
+Pauses a running agent's execution loop.
+
+# Arguments
+- `id::String`: The ID of the agent to pause.
+
+# Returns
+- `true` if the agent was paused or is already paused, `false` otherwise.
+"""
 function pauseAgent(id::String)::Bool
-    ag = getAgent(id)
-    if ag !== nothing && ag.status == RUNNING
-        ag.status = PAUSED
-        ag.updated = now()
-        @info "Agent $(ag.name) ($id) paused."
-        auto_persist && _save_state() # Save status change
-        return true
-    elseif ag !== nothing && ag.status == PAUSED
-         @warn "Agent $(ag.name) ($id) is already paused."
-         return true # Already achieved
-    else
-        state = ag === nothing ? "Not Found" : ag.status
-        @warn "Cannot pause agent $(ag.name) ($id). State: $state"
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "pauseAgent received invalid or empty ID." id
         return false
     end
+
+    ag = getAgent(id) # Uses global lock internally
+    ag === nothing && (@warn "pauseAgent: Agent $id not found"; return false)
+
+    lock(ag.lock) do # Acquire agent-specific lock
+        if ag.status == RUNNING
+            ag.status = PAUSED
+            ag.updated = now()
+            ag.last_activity = now() # Update activity timestamp
+            @info "Agent $(ag.name) ($id) paused."
+            # No need to notify the condition here, the loop checks status at the start
+            # and will enter the `wait` block if status is PAUSED.
+            # Persistence._save_state() # Save status change
+            return true
+        elseif ag.status == PAUSED
+            @warn "Agent $(ag.name) ($id) is already paused."
+            return true # Already achieved
+        else
+            state = string(ag.status) # Get status under lock
+            @warn "Cannot pause agent $(ag.name) ($id). State: $state. Must be RUNNING."
+            return false
+        end
+    end # Release agent-specific lock
 end
 
-# *** MODIFIED: resumeAgent just sets the flag ***
+"""
+    resumeAgent(id::String)::Bool
+
+Resumes a paused agent's execution loop.
+
+# Arguments
+- `id::String`: The ID of the agent to resume.
+
+# Returns
+- `true` if the agent was resumed or is already running, `false` otherwise.
+"""
 function resumeAgent(id::String)::Bool
-    ag = getAgent(id)
-    if ag !== nothing && ag.status == PAUSED
-        ag.status = RUNNING
-        ag.updated = now()
-        @info "Agent $(ag.name) ($id) resumed."
-        auto_persist && _save_state() # Save status change
-        return true
-     elseif ag !== nothing && ag.status == RUNNING
-         @warn "Agent $(ag.name) ($id) is already running."
-         return true # Already achieved
-    else
-        state = ag === nothing ? "Not Found" : ag.status
-        @warn "Cannot resume agent $(ag.name) ($id). State: $state"
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "resumeAgent received invalid or empty ID." id
         return false
     end
+
+    ag = getAgent(id) # Uses global lock internally
+    ag === nothing && (@warn "resumeAgent: Agent $id not found"; return false)
+
+    lock(ag.lock) do # Acquire agent-specific lock
+        if ag.status == PAUSED
+            ag.status = RUNNING
+            ag.updated = now()
+            ag.last_activity = now() # Update activity timestamp
+            @info "Agent $(ag.name) ($id) resumed."
+            # Notify the condition to wake up the agent loop from the wait state
+            notify(ag.condition)
+            # Persistence._save_state() # Save status change
+            return true
+        elseif ag.status == RUNNING
+            @warn "Agent $(ag.name) ($id) is already running."
+            return true # Already achieved
+        else
+            state = string(ag.status) # Get status under lock
+            @warn "Cannot resume agent $(ag.name) ($id). State: $state. Must be PAUSED."
+            return false
+        end
+    end # Release agent-specific lock
 end
 
 # ----------------------------------------------------------------------
 # STATUS ---------------------------------------------------------------
 # ----------------------------------------------------------------------
+"""
+    getAgentStatus(id::String)::Dict{String, Any}
+
+Retrieves the current status and relevant metrics for an agent.
+
+# Arguments
+- `id::String`: The ID of the agent.
+
+# Returns
+- `Dict` containing status information, or an error dictionary if the agent is not found.
+"""
 function getAgentStatus(id::String)::Dict{String, Any}
-    ag = getAgent(id) # Uses lock internally
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "getAgentStatus received invalid or empty ID." id
+        return Dict("status"=>"error", "error"=>"Invalid agent ID")
+    end
+
+    ag = getAgent(id) # Uses global lock internally
     ag === nothing && return Dict("status"=>"not_found", "error"=>"Agent $id not found")
 
-    # Calculate uptime if running/paused
-    uptime_sec = 0
-    if ag.status == RUNNING || ag.status == PAUSED
-        # Uptime based on last status change to RUNNING/PAUSED
-        # Need to store 'last_started' or similar timestamp?
-        # Using 'updated' provides time since last status change, which is okay for now
-        try
-            uptime_sec = round(Int, (now() - ag.updated).value / 1000)
-        catch e
-            @warn "Error calculating uptime for agent $id" exception=e
-            uptime_sec = -1 # Indicate error
+    # Acquire agent-specific lock to get a consistent snapshot of its state
+    lock(ag.lock) do
+        # Calculate uptime if running/paused (based on last status change to RUNNING/PAUSED/INITIALIZING)
+        uptime_sec = 0
+        if ag.status in (RUNNING, PAUSED, INITIALIZING)
+            try
+                # Uptime from the moment it entered a running/paused/initializing state
+                # Using 'updated' is a proxy, ideally we'd track 'last_started_or_resumed'
+                uptime_sec = round(Int, (now() - ag.updated).value / 1000)
+            catch e
+                @warn "Error calculating uptime for agent $id" exception=e
+                uptime_sec = -1 # Indicate error
+            end
         end
-    end
 
-    return Dict(
-        "id" => ag.id,
-        "name" => ag.name,
-        "type" => string(ag.type),
-        "status" => string(ag.status),
-        "uptime_seconds" => uptime_sec,
-        "tasks_completed" => length(ag.task_history), # Note: History might be capped
-        "queue_len" => length(ag.queue),
-        "memory_size" => length(ag.memory),
-        "last_updated" => string(ag.updated)
-    )
+        # Calculate time since last activity
+        time_since_activity_sec = round(Int, (now() - ag.last_activity).value / 1000)
+
+        # Use length from AbstractAgentQueue interface
+        queue_len = length(ag.queue)
+
+        # Use length from AbstractAgentMemory interface
+        memory_size = length(ag.memory)
+
+
+        return Dict(
+            "id" => ag.id,
+            "name" => ag.name,
+            "type" => string(ag.type),
+            "status" => string(ag.status),
+            "uptime_seconds" => uptime_sec,
+            "time_since_last_activity_seconds" => time_since_activity_sec, # NEW
+            "tasks_completed" => length(ag.task_history), # Note: History might be capped
+            "queue_len" => queue_len, # Use interface
+            "memory_size" => memory_size, # Use interface
+            "last_updated" => string(ag.updated),
+            "last_activity" => string(ag.last_activity), # NEW
+            "last_error" => isnothing(ag.last_error) ? nothing : string(ag.last_error), # NEW
+            "last_error_timestamp" => isnothing(ag.last_error_timestamp) ? nothing : string(ag.last_error_timestamp) # NEW
+        )
+    end # Release agent-specific lock
 end
 
 # ----------------------------------------------------------------------
-# TASK EXECUTION (with history capping) ---------------------------------
+# TASK EXECUTION (with history capping and queueing) ------------------
 # ----------------------------------------------------------------------
+"""
+    executeAgentTask(id::String, task::Dict{String,Any})::Dict{String, Any}
+
+Submits a task for an agent to execute.
+Tasks can be executed directly or added to the agent's queue based on the 'mode' field.
+
+# Arguments
+- `id::String`: The ID of the target agent.
+- `task::Dict{String,Any}`: The task definition. Must include an 'ability' key for execution.
+                            Optional 'mode' ("direct" or "queue", default "direct").
+                            Optional 'priority' (Number, lower is higher priority) for queue mode.
+
+# Returns
+- `Dict` containing the result of direct execution or confirmation of queueing, or an error.
+         Includes a `task_id` for tracking asynchronous tasks.
+"""
 function executeAgentTask(id::String, task::Dict{String,Any})::Dict{String, Any}
-    ag = getAgent(id)
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "executeAgentTask received invalid or empty agent ID." id
+        return Dict("success"=>false, "error"=>"Invalid agent ID")
+    end
+    if !isa(task, Dict)
+         @warn "executeAgentTask received invalid task payload for agent $id. Expected Dict." task
+         return Dict("success"=>false, "error"=>"Invalid task payload format. Expected Dict.", "agent_id"=>id)
+    end
+    if !haskey(task, "ability") || !isa(task["ability"], AbstractString) || isempty(task["ability"])
+         @warn "executeAgentTask received task without 'ability' key for agent $id." task
+         return Dict("success"=>false, "error"=>"Task must include a non-empty 'ability' key.", "agent_id"=>id)
+    end
+
+    ag = getAgent(id) # Uses global lock internally
     ag === nothing && return Dict("success"=>false, "error"=>"Agent $id not found")
 
-    # Check if agent is in a state that can execute tasks
-    if ag.status != RUNNING
-        # Maybe allow tasks if PAUSED? Depends on requirements.
-        # If allowed when paused, they would run immediately when resumed.
-        # For now, only RUNNING agents execute tasks directly.
-        return Dict("success"=>false, "error"=>"Agent $(ag.name) is not RUNNING (status: $(ag.status))")
-    end
+    task_id = string(uuid4()) # Generate unique task ID
+    submitted_time = now()
 
-    # --- QUEUE MODE ---
-    if get(task, "mode", "ability") == "queue"
-        # Add task to the agent's priority queue
-        # Lower number = higher priority
-        prio = -float(get(task, "priority", 0.0)) # Negate for Min-Heap behavior
-        try
-            enqueue!(ag.queue, task, prio)
-            @info "Task queued for agent $(ag.name) ($id) with priority $prio"
-            return Dict("success"=>true, "queued"=>true, "agent_id"=>id, "queue_length"=>length(ag.queue))
-        catch e
-             @error "Failed to enqueue task for agent $id" exception=(e, catch_backtrace())
-             return Dict("success"=>false, "error"=>"Failed to enqueue task: $(string(e))")
+    # Create the initial TaskResult
+    task_result = TaskResult(task_id, TASK_PENDING, submitted_time, nothing, nothing, task, nothing, nothing)
+
+    lock(ag.lock) do
+        # Check if agent is in a state that can receive tasks (RUNNING or PAUSED)
+        # Allowing tasks while PAUSED means they will be processed when resumed.
+        if ag.status != RUNNING && ag.status != PAUSED
+            # Update TaskResult status to FAILED before returning
+            task_result.status = TASK_FAILED
+            task_result.end_time = now()
+            task_result.error_details = ErrorException("Agent not in RUNNING or PAUSED state (status: $(ag.status))")
+            ag.task_results[task_id] = task_result # Store the failed task result
+            return Dict("success"=>false, "error"=>"Agent $(ag.name) is not RUNNING or PAUSED (status: $(ag.status))", "agent_id"=>id, "task_id"=>task_id)
         end
-    end
 
-    # --- DIRECT EXECUTION MODE ---
-    ability_name = get(task, "ability", "")
-    if isempty(ability_name)
-        return Dict("success"=>false, "error"=>"Task requires an 'ability' field for direct execution")
-    end
+        ag.task_results[task_id] = task_result # Store the task result
 
-    f = get(ABILITY_REGISTRY, ability_name, nothing)
-    if f === nothing
-        return Dict("success"=>false, "error"=>"Unknown ability: '$ability_name'")
-    end
-
-    try
-        # --- Execute the ability function ---
-        @debug "Executing direct task '$ability_name' for agent $(ag.name)"
-        output = f(ag, task) # Pass agent and full task dict
-        # ------------------------------------
-
-        # --- Add to Task History (with capping) ---
-        max_hist = ag.config.max_task_history
-        if max_hist > 0
-            history_entry = Dict("timestamp"=>now(), "input"=>task, "output"=>output)
-            push!(ag.task_history, history_entry)
-            # Enforce history limit
-            while length(ag.task_history) > max_hist
-                popfirst!(ag.task_history)
+        # --- QUEUE MODE ---
+        # Check for "mode" key, default to "direct" if not present
+        mode = get(task, "mode", "direct")
+        if mode == "queue"
+            # Add task_id to the agent's priority queue
+            # Lower number = higher priority. Negate user priority for Min-Heap behavior.
+            prio = -float(get(task, "priority", 0.0)) # Basic validation for priority type?
+            try
+                # Use enqueue! from the AbstractAgentQueue interface
+                enqueue!(ag.queue, task_id, prio) # Enqueue task_id instead of task dict
+                ag.last_activity = now()
+                @info "Task $task_id queued for agent $(ag.name) ($id) with priority $(abs(prio)). Queue size: $(length(ag.queue))"
+                # Notify the agent's condition to wake it up if it's waiting
+                notify(ag.condition) # Notify the agent's loop that there's new work
+                AgentMetrics.record_metric(id, "tasks_queued", 1; type=AgentMetrics.COUNTER)
+                AgentMetrics.record_metric(id, "queue_size", length(ag.queue); type=AgentMetrics.GAUGE)
+                return Dict("success"=>true, "queued"=>true, "agent_id"=>id, "task_id"=>task_id, "queue_length"=>length(ag.queue))
+            catch e
+                @error "Failed to enqueue task $task_id for agent $id" exception=(e, catch_backtrace())
+                # Update TaskResult status to FAILED before returning
+                task_result.status = TASK_FAILED
+                task_result.end_time = now()
+                task_result.error_details = e
+                AgentMetrics.record_metric(id, "task_errors_enqueue", 1; type=AgentMetrics.COUNTER)
+                return Dict("success"=>false, "error"=>"Failed to enqueue task: $(string(e))", "agent_id"=>id, "task_id"=>task_id)
             end
         end
-        # ------------------------------------------
 
-        # Return success merged with the output from the ability
-        # Ensure output is a Dict or handle other types
-        result_data = isa(output, Dict) ? output : Dict("result" => output)
-        return merge(Dict("success"=>true, "queued"=>false, "agent_id"=>id), result_data)
+        # --- DIRECT EXECUTION MODE ---
+        # Only allow direct execution if the agent is RUNNING
+        if ag.status != RUNNING
+             # Update TaskResult status to FAILED before returning
+            task_result.status = TASK_FAILED
+            task_result.end_time = now()
+            task_result.error_details = ErrorException("Agent is PAUSED. Direct execution is only allowed when RUNNING. Use mode='queue'.")
+             return Dict("success"=>false, "error"=>"Agent $(ag.name) is PAUSED. Direct execution is only allowed when RUNNING. Use mode='queue'.", "agent_id"=>id, "task_id"=>task_id)
+        end
 
-    catch e
-        @error "Error executing task '$ability_name' for agent $id" exception=(e, catch_backtrace())
-        # Optionally set agent status to ERROR?
-        # ag.status = ERROR
-        # ag.updated = now()
-        # auto_persist && _save_state()
-        return Dict("success"=>false, "error"=>"Execution error: $(string(e))", "queued"=>false, "agent_id"=>id)
-    end
+        ability_name = get(task, "ability", "")
+        f = get(ABILITY_REGISTRY, ability_name, nothing)
+        if f === nothing
+             # Update TaskResult status to FAILED before returning
+            task_result.status = TASK_FAILED
+            task_result.end_time = now()
+            task_result.error_details = ErrorException("Unknown ability: '$ability_name'")
+            return Dict("success"=>false, "error"=>"Unknown ability: '$ability_name'", "agent_id"=>id, "task_id"=>task_id)
+        end
+
+        try
+            @debug "Executing direct task '$ability_name' ($task_id) for agent $(ag.name) ($id)"
+            # Update TaskResult status to RUNNING
+            task_result.status = TASK_RUNNING
+            task_result.start_time = now()
+
+            # --- Execute the ability function ---
+            # Pass the agent and task. Ability function should acquire ag.lock if needed.
+            output = f(ag, task)
+            # ------------------------------------
+            ag.last_activity = now()
+
+            # Update TaskResult on success
+            task_result.status = TASK_COMPLETED
+            task_result.end_time = now()
+            task_result.output_result = output
+
+            # --- Add to Task History (with capping) ---
+            max_hist = ag.config.max_task_history
+            if max_hist > 0
+                # Store task_id in history entry for traceability
+                history_entry = Dict("timestamp"=>now(), "task_id"=>task_id, "input"=>task, "output"=>output)
+                push!(ag.task_history, history_entry)
+                while length(ag.task_history) > max_hist
+                    popfirst!(ag.task_history)
+                end
+            end
+            # ------------------------------------------
+
+            AgentMetrics.record_metric(id, "tasks_executed_direct", 1; type=AgentMetrics.COUNTER, tags=Dict("ability_name" => ability_name))
+
+
+            # Return success merged with the output from the ability
+            # Ensure output is a Dict or handle other types
+            result_data = isa(output, Dict) ? output : Dict("result" => output)
+            return merge(Dict("success"=>true, "queued"=>false, "agent_id"=>id, "task_id"=>task_id), result_data)
+
+        catch e
+            @error "Error executing task '$ability_name' ($task_id) for agent $id" exception=(e, catch_backtrace())
+            # Update TaskResult on failure
+            task_result.status = TASK_FAILED
+            task_result.end_time = now()
+            task_result.error_details = e
+
+            # Set agent status to ERROR on direct execution failure
+            ag.status = ERROR
+            ag.updated = now()
+            ag.last_error = e
+            ag.last_error_timestamp = now()
+            @error "Agent $(ag.name) ($id) set to ERROR due to direct task failure."
+
+            AgentMetrics.record_metric(id, "task_errors_direct", 1; type=AgentMetrics.COUNTER, tags=Dict("ability_name" => ability_name))
+            return Dict("success"=>false, "error"=>"Execution error: $(string(e))", "queued"=>false, "agent_id"=>id, "task_id"=>task_id)
+        end
+    end # Release agent-specific lock
 end
 
 
 # ----------------------------------------------------------------------
-# MEMORY ACCESS (LRU handled) ------------------------------------------
+# TASK TRACKING API (NEW)
 # ----------------------------------------------------------------------
+"""
+    getTaskStatus(id::String, task_id::String)::Dict{String, Any}
+
+Retrieves the current status of a specific task for an agent.
+
+# Arguments
+- `id::String`: The ID of the agent.
+- `task_id::String`: The ID of the task.
+
+# Returns
+- `Dict` containing the task status and metadata, or an error dictionary if the agent or task is not found.
+"""
+function getTaskStatus(id::String, task_id::String)::Dict{String, Any}
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "getTaskStatus received invalid or empty agent ID." id
+        return Dict("status"=>"error", "error"=>"Invalid agent ID")
+    end
+     if !isa(task_id, AbstractString) || isempty(task_id)
+        @warn "getTaskStatus received invalid or empty task ID." task_id
+        return Dict("status"=>"error", "error"=>"Invalid task ID")
+    end
+
+    ag = getAgent(id) # Uses global lock internally
+    ag === nothing && return Dict("status"=>"error", "error"=>"Agent $id not found")
+    lock(ag.lock) do # Acquire agent-specific lock
+        task_result = get(ag.task_results, task_id, nothing)
+        if task_result === nothing
+            return Dict("status"=>"error", "error"=>"Task $task_id not found for agent $id")
+        end
+        return Dict(
+            "task_id" => task_result.task_id,
+            "status" => string(task_result.status),
+            "submitted_time" => string(task_result.submitted_time),
+            "start_time" => isnothing(task_result.start_time) ? nothing : string(task_result.start_time),
+            "end_time" => isnothing(task_result.end_time) ? nothing : string(task_result.end_time),
+            "ability" => get(task_result.input_task, "ability", "N/A")
+        )
+    end # Release agent-specific lock
+end
+
+"""
+    getTaskResult(id::String, task_id::String)::Dict{String, Any}
+
+Retrieves the result or error details of a completed or failed task.
+
+# Arguments
+- `id::String`: The ID of the agent.
+- `task_id::String`: The ID of the task.
+
+# Returns
+- `Dict` containing the task status and result/error, or an error dictionary.
+"""
+function getTaskResult(id::String, task_id::String)::Dict{String, Any}
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "getTaskResult received invalid or empty agent ID." id
+        return Dict("status"=>"error", "error"=>"Invalid agent ID")
+    end
+     if !isa(task_id, AbstractString) || isempty(task_id)
+        @warn "getTaskResult received invalid or empty task ID." task_id
+        return Dict("status"=>"error", "error"=>"Invalid task ID")
+    end
+
+    ag = getAgent(id) # Uses global lock internally
+    ag === nothing && return Dict("status"=>"error", "error"=>"Agent $id not found")
+    lock(ag.lock) do # Acquire agent-specific lock
+        task_result = get(ag.task_results, task_id, nothing)
+        if task_result === nothing
+            return Dict("status"=>"error", "error"=>"Task $task_id not found for agent $id")
+        end
+        if task_result.status in (TASK_PENDING, TASK_RUNNING)
+            return Dict("status"=>string(task_result.status), "message"=>"Task is not yet completed or failed.", "task_id"=>task_id)
+        end
+        result_dict = Dict(
+            "task_id" => task_result.task_id,
+            "status" => string(task_result.status),
+            "submitted_time" => string(task_result.submitted_time),
+            "start_time" => isnothing(task_result.start_time) ? nothing : string(task_result.start_time),
+            "end_time" => string(task_result.end_time),
+            "input" => task_result.input_task # May want to filter sensitive info here in a real API layer
+        )
+        if task_result.status == TASK_COMPLETED
+            result_dict["result"] = task_result.output_result
+        elseif task_result.status == TASK_FAILED || task_result.status == TASK_CANCELLED
+            result_dict["error"] = isnothing(task_result.error_details) ? "Unknown error" : string(task_result.error_details)
+        end
+        return result_dict
+    end # Release agent-specific lock
+end
+
+"""
+    listAgentTasks(id::String; status_filter::Union{TaskStatus, Nothing}=nothing, limit::Int=100)::Dict{String, Any}
+
+Lists tasks submitted to an agent, optionally filtered by status and limited by count.
+Returns the most recent tasks first.
+
+# Arguments
+- `id::String`: The ID of the agent.
+- `status_filter::Union{TaskStatus, Nothing}`: Optional filter by task status.
+- `limit::Int`: Maximum number of tasks to return.
+
+# Returns
+- `Dict` containing a list of task status summaries, or an error dictionary.
+"""
+function listAgentTasks(id::String; status_filter::Union{TaskStatus, Nothing}=nothing, limit::Int=100)::Dict{String, Any}
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "listAgentTasks received invalid or empty agent ID." id
+        return Dict("status"=>"error", "error"=>"Invalid agent ID")
+    end
+     if !isa(limit, Integer) || limit < 0
+         @warn "listAgentTasks received invalid limit. Using default 100." limit
+         limit = 100
+     end
+     if status_filter !== nothing && !isa(status_filter, TaskStatus)
+         @warn "listAgentTasks received invalid status_filter type." status_filter
+         status_filter = nothing # Ignore invalid filter
+     end
+
+
+    ag = getAgent(id) # Uses global lock internally
+    ag === nothing && return Dict("status"=>"error", "error"=>"Agent $id not found")
+
+    lock(ag.lock) do # Acquire agent-specific lock
+        tasks = collect(values(ag.task_results)) # Get all task results
+        # Sort by submitted time, most recent first
+        sort!(tasks, by = t -> t.submitted_time, rev=true)
+
+        # Apply status filter
+        if status_filter !== nothing
+            filter!(t -> t.status == status_filter, tasks)
+        end
+
+        # Apply limit
+        if length(tasks) > limit
+            tasks = tasks[1:limit]
+        end
+
+        # Format results (return summary, not full input/output/error)
+        formatted_tasks = [
+            Dict(
+                "task_id" => t.task_id,
+                "status" => string(t.status),
+                "submitted_time" => string(t.submitted_time),
+                "start_time" => isnothing(t.start_time) ? nothing : string(t.start_time),
+                "end_time" => isnothing(t.end_time) ? nothing : string(t.end_time),
+                "ability" => get(t.input_task, "ability", "N/A")
+            ) for t in tasks
+        ]
+
+        return Dict("success"=>true, "agent_id"=>id, "tasks"=>formatted_tasks, "count"=>length(formatted_tasks))
+    end # Release agent-specific lock
+end
+
+"""
+    cancelTask(id::String, task_id::String)::Dict{String, Any}
+
+Attempts to cancel a pending or running task for an agent.
+Note: Running tasks may not be immediately interruptible depending on the ability implementation.
+
+# Arguments
+- `id::String`: The ID of the agent.
+- `task_id::String`: The ID of the task to cancel.
+
+# Returns
+- `Dict` indicating success or failure of the cancellation request.
+"""
+function cancelTask(id::String, task_id::String)::Dict{String, Any}
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "cancelTask received invalid or empty agent ID." id
+        return Dict("success"=>false, "error"=>"Invalid agent ID")
+    end
+     if !isa(task_id, AbstractString) || isempty(task_id)
+        @warn "cancelTask received invalid or empty task ID." task_id
+        return Dict("success"=>false, "error"=>"Invalid task ID")
+    end
+
+    ag = getAgent(id) # Uses global lock internally
+    ag === nothing && return Dict("success"=>false, "error"=>"Agent $id not found")
+
+    lock(ag.lock) do # Acquire agent-specific lock
+        task_result = get(ag.task_results, task_id, nothing)
+        if task_result === nothing
+            return Dict("success"=>false, "error"=>"Task $task_id not found for agent $id")
+        end
+
+        if task_result.status in (TASK_PENDING, TASK_RUNNING)
+            @info "Attempting to cancel task $task_id for agent $(ag.name) ($id). Current status: $(task_result.status)"
+            task_result.status = TASK_CANCELLED # Set status to CANCELLED
+            task_result.end_time = now()
+            task_result.error_details = ErrorException("Task cancelled by user.")
+            ag.last_activity = now() # Update activity
+            # Notify the agent's loop in case it's waiting or about to pick up the task
+            notify(ag.condition)
+            AgentMetrics.record_metric(id, "tasks_cancel_requested", 1; type=AgentMetrics.COUNTER)
+            return Dict("success"=>true, "task_id"=>task_id, "message"=>"Cancellation requested. Task status set to CANCELLED.")
+        else
+            @warn "Cannot cancel task $task_id for agent $id. Task is already in status: $(task_result.status)"
+            return Dict("success"=>false, "task_id"=>task_id, "error"=>"Task is not pending or running. Current status: $(task_result.status)")
+        end
+    end # Release agent-specific lock
+end
+
+
+# ----------------------------------------------------------------------
+# MEMORY ACCESS (LRU handled with locking) -----------------------------
+# ----------------------------------------------------------------------
+# These functions now dispatch to the methods of the AbstractAgentMemory instance
+
+"""
+    getAgentMemory(id::String, key::String)
+
+Retrieves a value from an agent's memory by key, updating its LRU status.
+
+# Arguments
+- `id::String`: The ID of the agent.
+- `key::String`: The memory key.
+
+# Returns
+- The value associated with the key, or `nothing` if the agent or key is not found.
+"""
 function getAgentMemory(id::String, key::String)
-    ag = getAgent(id)
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "getAgentMemory received invalid or empty agent ID." id
+        return nothing
+    end
+     if !isa(key, AbstractString) || isempty(key)
+        @warn "getAgentMemory received invalid or empty key." key
+        return nothing
+    end
+
+    ag = getAgent(id) # Uses global lock internally
     ag === nothing && return nothing # Agent not found
 
-    # Get value and update LRU status
-    val = get(ag.memory, key, nothing)
-    if val !== nothing && haskey(ag.memory, key) # Check haskey again in case of race condition if not locked
-        _touch!(ag.memory, key) # Move accessed item to the end (most recently used)
-    end
-    return val
+    # Acquire agent-specific lock for memory access
+    lock(ag.lock) do
+        # Use the interface method
+        val = get_value(ag.memory, key)
+        if val !== nothing # get_value should handle LRU touch internally
+             ag.last_activity = now() # Update activity on memory access
+        end
+        return val
+    end # Release agent-specific lock
 end
 
+"""
+    setAgentMemory(id::String, key::String, val)::Bool
+
+Sets a value in an agent's memory, updating LRU status and enforcing size limits.
+
+# Arguments
+- `id::String`: The ID of the agent.
+- `key::String`: The memory key.
+- `val`: The value to store.
+
+# Returns
+- `true` if the memory was set, `false` if the agent was not found.
+"""
 function setAgentMemory(id::String, key::String, val)::Bool
-    ag = getAgent(id)
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "setAgentMemory received invalid or empty agent ID." id
+        return false
+    end
+     if !isa(key, AbstractString) || isempty(key)
+        @warn "setAgentMemory received invalid or empty key." key
+        return false
+    end
+    # Note: val can be Any, so no type validation needed for val itself
+
+    ag = getAgent(id) # Uses global lock internally
     ag === nothing && return false
 
-    # Set value (adds if new, updates if exists)
-    ag.memory[key] = val
-    # Update LRU status (move to end) and enforce size limit
-    _touch!(ag.memory, key)
-    _enforce_lru!(ag)
+    # Acquire agent-specific lock for memory modification
+    lock(ag.lock) do
+        # Use the interface method
+        set_value!(ag.memory, key, val) # set_value! should handle LRU touch and size limit internally
+        ag.last_activity = now() # Update activity on memory modification
 
-    # Persist state? Setting memory might happen frequently.
-    # Decide if every memory set needs a full state save.
-    # auto_persist && _save_state() # This might be too slow if memory is set often
+        # State is saved periodically or on stop/delete.
+        # Persistence._save_state() # Avoid saving on every memory set if frequent
 
-    return true
+        return true
+    end # Release agent-specific lock
 end
 
+"""
+    clearAgentMemory(id::String)::Bool
+
+Clears all memory for a specific agent.
+
+# Arguments
+- `id::String`: The ID of the agent.
+
+# Returns
+- `true` if the memory was cleared or was already empty, `false` if the agent was not found.
+"""
 function clearAgentMemory(id::String)::Bool
-    ag = getAgent(id)
-    if ag !== nothing
-        if !isempty(ag.memory)
-            empty!(ag.memory)
+    # Basic input validation
+    if !isa(id, AbstractString) || isempty(id)
+        @warn "clearAgentMemory received invalid or empty ID." id
+        return false
+    end
+
+    ag = getAgent(id) # Uses global lock internally
+    ag === nothing && return false
+
+    lock(ag.lock) do # Acquire agent-specific lock for memory modification
+        # Use the interface method
+        if length(ag.memory) > 0 # Check length using interface
+            clear!(ag.memory) # Clear using interface
+            ag.last_activity = now() # Update activity on memory clear
             @info "Cleared memory for agent $(ag.name) ($id)"
-            # auto_persist && _save_state() # Save after significant change
+            # Persistence._save_state() # Save after significant change
         end
         return true
-    end
-    return false
+    end # Release agent-specific lock
 end
 
 # ----------------------------------------------------------------------
-# DEFAULT ABILITIES -----------------------------------------------------
+# DEFAULT ABILITIES
 # ----------------------------------------------------------------------
-register_ability("ping", (ag::Agent, task::Dict) -> begin
-    @info "'ping' received by agent $(ag.name)"
+# Define default abilities here. These should be registered in __init__.
+
+"""
+    ping_ability(agent::Agent, task::Dict)
+
+A simple ability that responds with "pong".
+"""
+function ping_ability(ag::Agent, task::Dict)
+    # Ability functions receive the agent and task dictionary.
+    # If they modify agent state, they should acquire ag.lock.
+    # This ping ability doesn't modify state, so no lock needed here.
+    @info "'ping' received by agent $(ag.name) ($(ag.id))"
+    # No need to update last_activity here, executeAgentTask already does it for direct execution.
     return Dict("msg"=>"pong", "agent_id"=>ag.id, "agent_name"=>ag.name)
-end)
+end
 
-# --- LLM Integration Submodule ---
-module LLMIntegration
-    # This structure keeps OpenAI optional
-    using Logging, Pkg
-    export chat
+"""
+    llm_chat_ability(agent::Agent, task::Dict)
 
-    # Attempt to load OpenAI, fallback to echo if fails
-    const OpenAI_LOADED = Ref(false)
-    try
-        eval(:(using OpenAI)) # Use eval to load conditionally
-        global OpenAI_LOADED[] = true
-        @info "OpenAI.jl loaded successfully for LLM integration."
-    catch e
-        @warn "OpenAI.jl not found or failed to load. LLM chat ability will fallback to echo mode." e
-    end
-
-    function chat(prompt::String; cfg::Dict)
-        if OpenAI_LOADED[]
-            # Extract config with defaults
-            api_key = get(ENV, "OPENAI_API_KEY", "") # Prefer environment variable
-            if isempty(api_key) && haskey(cfg, "api_key")
-                 api_key = cfg["api_key"]
-            end
-             isempty(api_key) && (@error "OpenAI API key not found in ENV or config."; return "[LLM ERROR: API Key Missing]")
-
-            model = get(cfg, "model", "gpt-4o-mini")
-            temp = get(cfg, "temperature", 0.7)
-            max_tokens = get(cfg, "max_tokens", 1024)
-
-            try
-                 # Use the loaded OpenAI module's function
-                 # Assuming chat_completion takes api_key, model, prompt etc.
-                 # Adjust call signature based on actual OpenAI.jl version API
-                 # Example call structure (verify with OpenAI.jl docs):
-                 result = OpenAI.create_chat(
-                     api_key,
-                     model,
-                     [Dict("role" => "user", "content" => prompt)];
-                     temperature=temp,
-                     max_tokens=max_tokens
-                 )
-                 # Extract the response content
-                 return result.choices[1].message.content
-            catch e
-                 @error "OpenAI API call failed" model=model exception=(e,catch_backtrace())
-                 return "[LLM ERROR: API Call Failed]"
-            end
-        else
-            # Fallback echo mode
-            return "[LLM disabled] Echo: " * prompt
-        end
-    end
-end # end LLMIntegration submodule
-
-register_ability("llm_chat", (ag::Agent, task::Dict) -> begin
+An ability that sends a prompt to the configured LLM provider.
+Requires LLMIntegration module (or a pluggable LLM implementation).
+"""
+function llm_chat_ability(ag::Agent, task::Dict)
+    # This ability function needs access to the agent's config, which is immutable.
+    # It doesn't modify agent state directly, so no ag.lock acquisition needed here.
     prompt = get(task, "prompt", "Hi!")
-    @info "Agent $(ag.name) performing LLM chat with prompt: $(first(prompt, 50))..."
-    # Call the chat function from the submodule
-    answer = LLMIntegration.chat(prompt; cfg=ag.config.llm_config)
+    # Basic validation for prompt
+    if !isa(prompt, AbstractString) || isempty(prompt)
+         @warn "llm_chat_ability received invalid or empty prompt for agent $(ag.id)." task
+         # Return an error result
+         return Dict("error" => "Invalid or empty prompt provided.")
+    end
+
+    if ag.llm_integration === nothing
+         @warn "Agent $(ag.id) has no LLM integration configured."
+         return Dict("error" => "LLM integration not configured for this agent.")
+    end
+
+    @info "Agent $(ag.name) ($(ag.id)) performing LLM chat with prompt: $(first(prompt, 50))..."
+    # Call the chat function using the AbstractLLMIntegration interface
+    answer = chat(ag.llm_integration, prompt; cfg=ag.config.llm_config) # Pass agent's LLM config
     return Dict("answer" => answer)
-end)
-# ----------------------------------------------------------------------
+end
 
+"""
+    evaluate_fitness_ability(agent::Agent, task::Dict)
 
-# ----------------------------------------------------------------------
-# SWARM IMPLEMENTATION ---------------------------------------------------
-# ----------------------------------------------------------------------
-module Swarm
-    using Dates, Logging, JSON3, Base.Threads
-    export SwarmBackend, connect_swarm, disconnect_swarm, publish_to_swarm, subscribe_swarm!
+An ability for agents to evaluate a fitness/objective function for a given position (candidate solution).
+This is intended to be called by the Swarm module for distributed optimization.
 
-    # Import the get_config function from parent module
-    using ..Config: get_config
-    # Import other needed symbols from parent module
-    import .. getAgent
-    import .. record_metric
-    import .. Metrics
-    import DataStructures: enqueue!
+Task dictionary should contain:
+- `position_data::Vector{Float64}`: The candidate solution to evaluate.
+- `objective_function_name::String`: The name of the objective function (registered in Swarms.jl).
+- `swarm_id::String` (optional, for context/logging)
+- `task_id_original::String` (optional, for context/logging, the ID of the swarm's evaluation task)
+"""
+function evaluate_fitness_ability(ag::Agent, task::Dict)
+    position_data = get(task, "position_data", nothing)
+    obj_func_name = get(task, "objective_function_name", nothing)
+    swarm_id_context = get(task, "swarm_id", "N/A")
 
-    # Swarm backend types
-    @enum SwarmBackend begin
-        NONE = 0      # No backend, messages are logged but not sent
-        MEMORY = 1    # In-memory message bus (for testing/development)
-        REDIS = 2     # Redis pub/sub
-        NATS = 3      # NATS messaging system
-        ZEROMQ = 4    # ZeroMQ messaging
+    if isnothing(position_data) || !isa(position_data, Vector{Float64})
+        @error "Agent $(ag.id) evaluate_fitness: Missing or invalid 'position_data'."
+        return Dict("error" => "Missing or invalid 'position_data'", "fitness" => nothing)
+    end
+    if isnothing(obj_func_name) || !isa(obj_func_name, String)
+        @error "Agent $(ag.id) evaluate_fitness: Missing or invalid 'objective_function_name'."
+        return Dict("error" => "Missing or invalid 'objective_function_name'", "fitness" => nothing)
     end
 
-    # Global swarm state
-    const SWARM_CONNECTIONS = Dict{String, Any}() # Agent ID -> Connection
-    const SWARM_SUBSCRIPTIONS = Dict{String, Dict{String, Any}}() # Agent ID -> Topic -> Subscription
-    const SWARM_LOCK = ReentrantLock()
+    # Get the actual objective function. This relies on Swarms.jl having registered it.
+    # This creates a dependency: Agents.jl needs to be able to call a function from Swarms.jl
+    # or the objective function registry needs to be accessible globally or passed around.
+    # For now, assume Swarms.get_objective_function_by_name is callable.
+    # This might require `using ..Swarms` or `import ..Swarms: get_objective_function_by_name`
+    # at the top of Agents.jl, or making the registry globally accessible.
+    # Let's assume `Swarm.get_objective_function_by_name` is available via the `import .Swarm`
+    
+    # Ensure Swarm module and its function are accessible
+    obj_fn = Swarm.get_objective_function_by_name(obj_func_name) # Using Swarm.
+    if obj_fn === nothing || !isa(obj_fn, Function) # Check if it's a real function
+        @error "Agent $(ag.id) evaluate_fitness: Objective function '$obj_func_name' not found or not a function."
+        return Dict("error" => "Objective function '$obj_func_name' not found.", "fitness" => nothing)
+    end
 
-    # In-memory message bus for MEMORY backend
-    const MEMORY_BUS = Dict{String, Channel{Any}}() # Topic -> Channel
-    const MEMORY_BUS_LOCK = ReentrantLock()
+    @debug "Agent $(ag.id) evaluating fitness for swarm $swarm_id_context, objective '$obj_func_name'."
+    try
+        fitness_value = obj_fn(position_data)
+        # No need to update last_activity here, executeAgentTask handles it.
+        return Dict("fitness" => fitness_value, "position_evaluated" => position_data)
+    catch e
+        @error "Agent $(ag.id) error during fitness evaluation for objective '$obj_func_name'" exception=(e, catch_backtrace())
+        return Dict("error" => "Error during fitness evaluation: $(string(e))", "fitness" => nothing)
+    end
+end
 
-    # Get the swarm backend type from config
-    function _get_backend_type()
-        backend_str = lowercase(get_config("swarm.backend", "none"))
-        if backend_str == "memory"
-            return MEMORY
-        elseif backend_str == "redis"
-            return REDIS
-        elseif backend_str == "nats"
-            return NATS
-        elseif backend_str == "zeromq"
-            return ZEROMQ
-        else
-            return NONE
+
+# ----------------------------------------------------------------------
+# Module Initialization
+# ----------------------------------------------------------------------
+function __init__()
+    # Configuration is loaded by Config.__init__ (implicitly when Config module is loaded)
+
+    # Load state from persistence
+    # Persistence.__init__ handles loading state and starting the persistence task
+
+    # Initialize metrics for any agents loaded from state (handled in Persistence._load_state)
+    # Start the agent monitor if enabled (AgentMonitor.__init__ handles starting its task)
+
+    # Register default abilities and skills
+    register_ability("ping", ping_ability)
+    register_ability("llm_chat", llm_chat_ability)
+    register_ability("evaluate_fitness", evaluate_fitness_ability) # Register the new ability
+
+    # Register other default skills if any (e.g., periodic cleanup)
+    # register_skill("periodic_cleanup", periodic_cleanup_skill; schedule=Schedule(:periodic, 3600)) # Example periodic skill
+
+    @info "Agents.jl core module initialized."
+end
+
+
+# ----------------------------------------------------------------------
+# EVENT TRIGGERING (NEW)
+# ----------------------------------------------------------------------
+"""
+    trigger_agent_event(agent_id::String, event_name::String, event_data::Dict=Dict())
+
+Triggers event-based skills for a specific agent.
+
+# Arguments
+- `agent_id::String`: The ID of the agent to trigger the event for.
+- `event_name::String`: The name of the event.
+- `event_data::Dict`: Optional data associated with the event, passed to the skill function.
+
+# Returns
+- `Vector{Dict}`: A list of results from executed skills, or an error dict if agent not found.
+                  Each skill result dict contains `skill_name` and `result` or `error`.
+"""
+function trigger_agent_event(agent_id::String, event_name::String, event_data::Dict=Dict())
+    ag = getAgent(agent_id)
+    if isnothing(ag)
+        @warn "trigger_agent_event: Agent $agent_id not found."
+        return [Dict("error" => "Agent $agent_id not found")]
+    end
+
+    # Check if agent is in a runnable state (e.g., RUNNING)
+    # Event-driven skills might still be processed if PAUSED, depending on design.
+    # For now, let's allow triggering even if PAUSED, as the skill execution itself
+    # might be quick or the event important. If agent is STOPPED or ERROR, skip.
+    if ag.status == STOPPED || ag.status == ERROR
+        @warn "trigger_agent_event: Agent $agent_id is in status $(ag.status). Event '$event_name' not processed."
+        return [Dict("error" => "Agent $agent_id is in status $(ag.status), event '$event_name' not processed.")]
+    end
+
+    results = []
+    executed_skills_for_event = 0
+
+    lock(ag.lock) do # Ensure thread-safe access to agent's skills and state
+        current_time = now()
+        for (skill_name, sstate) in ag.skills
+            sk = sstate.skill
+            if sk.schedule !== nothing && sk.schedule.type == :event && sk.schedule.value == event_name
+                @info "Agent $(ag.id): Triggering event skill '$(sk.name)' for event '$event_name'."
+                skill_result = Dict("skill_name" => sk.name)
+                try
+                    # Event-driven skills receive the agent and event_data
+                    # The skill function `sk.fn` should be defined as `fn(agent::Agent, event_payload::Dict)`
+                    output = sk.fn(ag, event_data) 
+                    skill_result["result"] = output
+                    sstate.xp += 0.5 # Smaller XP gain for event-driven, or make configurable
+                    sstate.last_exec = current_time
+                    ag.last_activity = current_time
+                    AgentMetrics.record_metric(ag.id, "skills_executed_event", 1; type=AgentMetrics.COUNTER, tags=Dict("skill_name" => sk.name, "event_name" => event_name))
+                    executed_skills_for_event += 1
+                catch e
+                    @error "Error executing event skill '$(sk.name)' for agent $(ag.id) on event '$event_name'" exception=(e, catch_backtrace())
+                    skill_result["error"] = string(e)
+                    sstate.xp -= 1 
+                    AgentMetrics.record_metric(ag.id, "skill_errors_event", 1; type=AgentMetrics.COUNTER, tags=Dict("skill_name" => sk.name, "event_name" => event_name))
+                    # Optionally, set agent to ERROR state if event skill fails critically
+                    # ag.status = ERROR; ag.last_error = e; ag.last_error_timestamp = now();
+                end
+                push!(results, skill_result)
+            end
+        end
+    end # Release agent lock
+
+    if executed_skills_for_event == 0
+        @debug "Agent $(ag.id): No skills registered for event '$event_name'."
+        # Return an empty list or a message indicating no skills were triggered
+        # For consistency, if agent was found but no skills, return empty list of results.
+    end
+    
+    return results
+end
+
+# --- Auto-restart logic (called from _agent_loop's finally block) ---
+function _handle_auto_restart(ag::Agent)
+    # This function is called from the finally block of _agent_loop.
+    # The AGENTS_LOCK is NOT held here, but the agent's specific lock (ag.lock) might be,
+    # or might have been released if the loop exited cleanly.
+    # We need to re-acquire ag.lock to safely check and modify its status for restart.
+
+    should_attempt_restart = false
+    lock(ag.lock) do # Safely read status
+        if AUTO_RESTART[] && ag.status == ERROR
+            should_attempt_restart = true
         end
     end
 
-    # Connect to the swarm backend
-    function connect_swarm(agent_id::String)
-        lock(SWARM_LOCK) do
-            # Check if already connected
-            if haskey(SWARM_CONNECTIONS, agent_id)
-                @debug "Agent $agent_id already connected to swarm"
-                return SWARM_CONNECTIONS[agent_id]
+    if should_attempt_restart
+        @warn "Agent $(ag.name) ($(ag.id)) ended in ERROR state. Attempting auto-restart as per configuration (AUTO_RESTART = $(AUTO_RESTART[]))."
+        
+        # Add a small delay before restarting
+        sleep(get_config("agent.auto_restart_delay_seconds", 5)) # New config or hardcode
+
+        # Reset error state and attempt to restart
+        # The startAgent function handles its own locking and sets status to INITIALIZING/RUNNING.
+        # It also prevents starting if already in ERROR state, so we must clear the error first.
+        lock(ag.lock) do
+            ag.last_error = nothing
+            ag.last_error_timestamp = nothing
+            # We don't change ag.status here; startAgent will handle it.
+            # If startAgent fails, the agent might re-enter ERROR state.
+            # A more robust system would have max restart attempts.
+        end
+        
+        # Run startAgent asynchronously to avoid blocking the finally block of the original task,
+        # especially if startAgent itself involves waiting or complex operations.
+        @async begin
+            try
+                success = startAgent(ag.id) # startAgent handles its own locking
+                if success
+                    @info "Agent $(ag.name) ($(ag.id)) auto-restarted successfully."
+                else
+                    @error "Agent $(ag.name) ($(ag.id)) auto-restart attempt failed. Agent may remain in ERROR or STOPPED state."
+                    # If startAgent fails, it might set status to ERROR again.
+                    # The agent's loop will not run again unless startAgent succeeds.
+                    # We might need to log this failure more persistently or alert.
+                end
+            catch restart_ex
+                @error "Exception during asynchronous auto-restart attempt for agent $(ag.name) ($ag.id)" exception=(restart_ex, catch_backtrace())
+                # Ensure agent status reflects this new error if restart itself fails badly
+                lock(ag.lock) do
+                    ag.status = ERROR
+                    ag.last_error = restart_ex
+                    ag.last_error_timestamp = now()
+                end
+                # Persist this critical failure state
+                lock(AGENTS_LOCK) do
+                    Persistence._save_state()
+                end
             end
-
-            # Get backend type
-            backend = _get_backend_type()
-
-            # Connect based on backend type
-            connection = nothing
-            if backend == MEMORY
-                # For memory backend, just create an empty dict to store subscriptions
-                connection = Dict{String, Any}("backend" => MEMORY)
-                @info "Agent $agent_id connected to in-memory swarm backend"
-            elseif backend == REDIS
-                # Redis backend
-                if !@isdefined(Redis)
-                    @warn "Redis.jl not found. Install with: using Pkg; Pkg.add(\"Redis\")"
-                    return nothing
-                end
-
-                try
-                    conn_string = get_config("swarm.connection_string", "redis://localhost:6379")
-                    redis_conn = Redis.RedisConnection(conn_string)
-                    connection = Dict{String, Any}("backend" => REDIS, "connection" => redis_conn)
-                    @info "Agent $agent_id connected to Redis swarm backend at $conn_string"
-                catch e
-                    @error "Failed to connect to Redis" exception=(e, catch_backtrace())
-                    return nothing
-                end
-            elseif backend == NATS
-                # NATS backend
-                if !@isdefined(NATS)
-                    @warn "NATS.jl not found. Install with: using Pkg; Pkg.add(\"NATS\")"
-                    return nothing
-                end
-
-                try
-                    conn_string = get_config("swarm.connection_string", "nats://localhost:4222")
-                    nats_conn = NATS.connect(conn_string)
-                    connection = Dict{String, Any}("backend" => NATS, "connection" => nats_conn)
-                    @info "Agent $agent_id connected to NATS swarm backend at $conn_string"
-                catch e
-                    @error "Failed to connect to NATS" exception=(e, catch_backtrace())
-                    return nothing
-                end
-            elseif backend == ZEROMQ
-                # ZeroMQ backend
-                if !@isdefined(ZMQ)
-                    @warn "ZMQ.jl not found. Install with: using Pkg; Pkg.add(\"ZMQ\")"
-                    return nothing
-                end
-
-                try
-                    conn_string = get_config("swarm.connection_string", "tcp://localhost:5555")
-                    context = ZMQ.Context()
-                    pub_socket = ZMQ.Socket(context, ZMQ.PUB)
-                    sub_socket = ZMQ.Socket(context, ZMQ.SUB)
-                    ZMQ.connect(pub_socket, conn_string)
-                    ZMQ.connect(sub_socket, conn_string)
-                    connection = Dict{String, Any}(
-                        "backend" => ZEROMQ,
-                        "context" => context,
-                        "pub_socket" => pub_socket,
-                        "sub_socket" => sub_socket
-                    )
-                    @info "Agent $agent_id connected to ZeroMQ swarm backend at $conn_string"
-                catch e
-                    @error "Failed to connect to ZeroMQ" exception=(e, catch_backtrace())
-                    return nothing
-                end
-            else
-                # NONE backend - just log messages
-                connection = Dict{String, Any}("backend" => NONE)
-                @info "Agent $agent_id using null swarm backend (messages will be logged only)"
-            end
-
-            # Store the connection
-            SWARM_CONNECTIONS[agent_id] = connection
-            SWARM_SUBSCRIPTIONS[agent_id] = Dict{String, Any}()
-
-            return connection
         end
     end
+end
+# --- End auto-restart logic ---
 
-    # Disconnect from the swarm backend
-    function disconnect_swarm(agent_id::String)
-        lock(SWARM_LOCK) do
-            if !haskey(SWARM_CONNECTIONS, agent_id)
-                @debug "Agent $agent_id not connected to swarm"
-                return false
-            end
+# ----------------------------------------------------------------------
+# AGENT FITNESS EVALUATION (NEW - for Swarm integration)
+# ----------------------------------------------------------------------
+"""
+    evaluateAgentFitness(agent_id::String, objective_function_id::String, candidate_solution::Any, problem_context::Dict{String,Any})::Dict{String, Any}
 
-            # Get the connection
-            connection = SWARM_CONNECTIONS[agent_id]
-            backend = connection["backend"]
+Allows an agent to evaluate the fitness of a given candidate solution using a specified objective function.
+This is intended to be called by a Swarm Manager or other coordinating entity.
 
-            # Unsubscribe from all topics
-            if haskey(SWARM_SUBSCRIPTIONS, agent_id)
-                for (topic, subscription) in SWARM_SUBSCRIPTIONS[agent_id]
-                    _unsubscribe(agent_id, topic, connection, subscription)
-                end
-                delete!(SWARM_SUBSCRIPTIONS, agent_id)
-            end
+# Arguments
+- `agent_id::String`: The ID of the agent to perform the evaluation.
+- `objective_function_id::String`: Identifier for the objective function (must be registered, e.g., in Swarm module).
+- `candidate_solution::Any`: The solution to evaluate (e.g., `Vector{Float64}`). Type checking/conversion might be needed.
+- `problem_context::Dict{String,Any}`: Additional context required by the objective function.
 
-            # Close connection based on backend type
-            if backend == REDIS && haskey(connection, "connection")
-                try
-                    Redis.disconnect(connection["connection"])
-                catch e
-                    @warn "Error disconnecting from Redis" exception=e
-                end
-            elseif backend == NATS && haskey(connection, "connection")
-                try
-                    NATS.close(connection["connection"])
-                catch e
-                    @warn "Error disconnecting from NATS" exception=e
-                end
-            elseif backend == ZEROMQ
-                try
-                    if haskey(connection, "pub_socket")
-                        ZMQ.close(connection["pub_socket"])
-                    end
-                    if haskey(connection, "sub_socket")
-                        ZMQ.close(connection["sub_socket"])
-                    end
-                    if haskey(connection, "context")
-                        ZMQ.close(connection["context"])
-                    end
-                catch e
-                    @warn "Error disconnecting from ZeroMQ" exception=e
-                end
-            end
-
-            # Remove the connection
-            delete!(SWARM_CONNECTIONS, agent_id)
-            @info "Agent $agent_id disconnected from swarm"
-
-            return true
-        end
+# Returns
+- `Dict` with `success::Bool` and `fitness_value::Float64` or `error::String`.
+"""
+function evaluateAgentFitness(agent_id::String, objective_function_id::String, candidate_solution::Any, problem_context::Dict{String,Any})::Dict{String, Any}
+    ag = getAgent(agent_id)
+    if isnothing(ag)
+        return Dict("success" => false, "error" => "Agent $agent_id not found")
     end
 
-    # Helper to format the full topic
-    function _format_topic(agent_id::String, topic::String)
-        # Get the swarm ID from the agent's config
-        swarm_id = "default"
+    # Lock the agent to check status and prevent interference if it were to run other tasks concurrently (though this is direct call)
+    lock(ag.lock) do
+        # Agent should ideally be RUNNING or IDLE (if IDLE is a state where it can accept direct work)
+        # For now, let's assume RUNNING is the primary state for such direct evaluations.
+        # If an agent is PAUSED, it shouldn't actively compute. If STOPPED or ERROR, it definitely can't.
+        if ag.status != RUNNING
+            return Dict("success" => false, "error" => "Agent $agent_id is not in RUNNING state (current: $(ag.status)). Cannot evaluate fitness.")
+        end
+
+        # Retrieve the objective function (e.g., from Swarm module's registry)
+        # This relies on Swarm.jl providing such a function.
+        obj_fn = Swarm.get_objective_function_by_name(objective_function_id)
+        if obj_fn === nothing || !isa(obj_fn, Function)
+            return Dict("success" => false, "error" => "Objective function '$objective_function_id' not found or is not a callable function.")
+        end
+
+        @debug "Agent $(ag.id) evaluating fitness for objective '$objective_function_id'."
         try
-            ag = getAgent(agent_id)
-            if ag !== nothing && haskey(ag.config.parameters, "swarm_id")
-                swarm_id = ag.config.parameters["swarm_id"]
-            end
-        catch
-            # Ignore errors and use default
-        end
+            # Type assertion/conversion for candidate_solution might be needed here
+            # For now, assume obj_fn can handle `candidate_solution::Any` or it's already correct type.
+            # Objective functions might also need the problem_context.
+            # The signature of registered objective functions should be `fn(solution, context)`
+            # or simply `fn(solution)` if context is not always needed or handled differently.
+            # Let's assume for now that objective functions registered via Swarm.get_objective_function_by_name
+            # expect `fn(solution_vector)` and potentially use `problem_context` if passed.
+            # A more robust system would have a clear contract for objective function signatures.
 
-        # Format the full topic
-        base_topic = get_config("swarm.default_topic", "juliaos.swarm")
-        return "$base_topic.$swarm_id.$topic"
-    end
+            # Example: If objective functions always expect Vector{Float64} and a context Dict:
+            # if !isa(candidate_solution, Vector{Float64})
+            #     return Dict("success" => false, "error" => "Invalid candidate_solution format. Expected Vector{Float64}.")
+            # end
+            # fitness_value = obj_fn(candidate_solution, problem_context)
 
-    # Helper to unsubscribe from a topic
-    function _unsubscribe(agent_id::String, topic::String, connection::Dict{String, Any}, subscription::Any)
-        backend = connection["backend"]
-
-        if backend == MEMORY
-            # For memory backend, remove the task
-            if haskey(subscription, "task") && subscription["task"] !== nothing
-                try
-                    # Signal the task to stop
-                    subscription["running"] = false
-                    # Wait for it to finish
-                    if !istaskdone(subscription["task"])
-                        wait(subscription["task"])
-                    end
-                catch e
-                    @warn "Error stopping memory subscription task" exception=e
-                end
-            end
-        elseif backend == REDIS && haskey(connection, "connection")
-            # For Redis, unsubscribe from the channel
-            try
-                Redis.unsubscribe(connection["connection"], subscription["channel"])
-            catch e
-                @warn "Error unsubscribing from Redis channel" exception=e
-            end
-        elseif backend == NATS && haskey(connection, "connection")
-            # For NATS, unsubscribe from the subject
-            try
-                NATS.unsubscribe(connection["connection"], subscription["subscription"])
-            catch e
-                @warn "Error unsubscribing from NATS subject" exception=e
-            end
-        elseif backend == ZEROMQ && haskey(connection, "sub_socket")
-            # For ZeroMQ, unsubscribe from the topic
-            try
-                ZMQ.unsubscribe(connection["sub_socket"], subscription["topic"])
-            catch e
-                @warn "Error unsubscribing from ZeroMQ topic" exception=e
-            end
-        end
-
-        @debug "Agent $agent_id unsubscribed from topic $topic"
-    end
-
-    # Publish a message to a topic
-    function publish_to_swarm(agent_id::String, topic::String, msg::Dict)
-        # Ensure the agent is connected
-        connection = get(SWARM_CONNECTIONS, agent_id, nothing)
-        if connection === nothing
-            connection = connect_swarm(agent_id)
-            if connection === nothing
-                @warn "Failed to connect agent $agent_id to swarm"
-                return false
-            end
-        end
-
-        # Format the full topic
-        full_topic = _format_topic(agent_id, topic)
-
-        # Add metadata to the message
-        msg_with_meta = copy(msg)
-        msg_with_meta["_source_agent"] = agent_id
-        msg_with_meta["_timestamp"] = string(now())
-        msg_with_meta["_topic"] = topic
-
-        # Serialize the message
-        serialized_msg = JSON3.write(msg_with_meta)
-
-        # Publish based on backend type
-        backend = connection["backend"]
-        if backend == MEMORY
-            # For memory backend, send to the in-memory channel
-            lock(MEMORY_BUS_LOCK) do
-                if !haskey(MEMORY_BUS, full_topic)
-                    # Create a new channel for this topic
-                    MEMORY_BUS[full_topic] = Channel{Any}(100) # Buffer up to 100 messages
-                end
-
-                # Try to put the message in the channel
-                try
-                    put!(MEMORY_BUS[full_topic], msg_with_meta)
-                    @debug "Published message to in-memory topic $full_topic"
-                    return true
-                catch e
-                    @error "Failed to publish to in-memory topic $full_topic" exception=e
-                    return false
-                end
-            end
-        elseif backend == REDIS && haskey(connection, "connection")
-            # For Redis, publish to the channel
-            try
-                Redis.publish(connection["connection"], full_topic, serialized_msg)
-                @debug "Published message to Redis channel $full_topic"
-                return true
-            catch e
-                @error "Failed to publish to Redis channel $full_topic" exception=e
-                return false
-            end
-        elseif backend == NATS && haskey(connection, "connection")
-            # For NATS, publish to the subject
-            try
-                NATS.publish(connection["connection"], full_topic, serialized_msg)
-                @debug "Published message to NATS subject $full_topic"
-                return true
-            catch e
-                @error "Failed to publish to NATS subject $full_topic" exception=e
-                return false
-            end
-        elseif backend == ZEROMQ && haskey(connection, "pub_socket")
-            # For ZeroMQ, publish to the topic
-            try
-                ZMQ.send(connection["pub_socket"], full_topic, ZMQ.SNDMORE)
-                ZMQ.send(connection["pub_socket"], serialized_msg)
-                @debug "Published message to ZeroMQ topic $full_topic"
-                return true
-            catch e
-                @error "Failed to publish to ZeroMQ topic $full_topic" exception=e
-                return false
-            end
-        else
-            # NONE backend - just log the message
-            @info "SWARM: Agent $agent_id publishing to topic $topic" msg=msg
-            return true
-        end
-    end
-
-    # Subscribe to a topic
-    function subscribe_swarm!(agent_id::String, topic::String)
-        # Ensure the agent is connected
-        connection = get(SWARM_CONNECTIONS, agent_id, nothing)
-        if connection === nothing
-            connection = connect_swarm(agent_id)
-            if connection === nothing
-                @warn "Failed to connect agent $agent_id to swarm"
-                return false
-            end
-        end
-
-        # Check if already subscribed
-        lock(SWARM_LOCK) do
-            if haskey(SWARM_SUBSCRIPTIONS, agent_id) &&
-               haskey(SWARM_SUBSCRIPTIONS[agent_id], topic)
-                @debug "Agent $agent_id already subscribed to topic $topic"
-                return true
+            # Simpler: assume obj_fn takes the candidate_solution directly.
+            # If it needs context, it must be designed to fetch it or be partially applied with it.
+            # The current SwarmBase.OptimizationProblem's obj_func takes only the solution vector.
+            # So, we should adhere to that for functions retrieved via Swarm module.
+            if !isa(candidate_solution, Vector{Float64}) && !isa(candidate_solution, Vector{<:Number}) # Allow Vector of any Number subtype
+                 @warn "Candidate solution for '$objective_function_id' is not Vector{<:Number}. Type: $(typeof(candidate_solution)). Attempting conversion or direct pass."
+                 # Attempt conversion if it's a generic vector of numbers
+                 try
+                     candidate_solution = convert(Vector{Float64}, candidate_solution)
+                 catch conv_err
+                     return Dict("success" => false, "error" => "Invalid candidate_solution format. Expected Vector{<:Number}. Conversion failed: $conv_err")
+                 end
             end
 
-            # Format the full topic
-            full_topic = _format_topic(agent_id, topic)
+            fitness_value = obj_fn(candidate_solution) # Pass only solution as per current Swarm obj_fn signature
 
-            # Subscribe based on backend type
-            backend = connection["backend"]
-            subscription = Dict{String, Any}()
-
-            if backend == MEMORY
-                # For memory backend, create a task that listens on the channel
-                lock(MEMORY_BUS_LOCK) do
-                    if !haskey(MEMORY_BUS, full_topic)
-                        # Create a new channel for this topic
-                        MEMORY_BUS[full_topic] = Channel{Any}(100) # Buffer up to 100 messages
-                    end
-                end
-
-                # Create a flag to signal the task to stop
-                subscription["running"] = true
-
-                # Create a task that listens on the channel
-                subscription["task"] = @task begin
-                    try
-                        @debug "Started memory subscription task for agent $agent_id on topic $topic"
-                        while subscription["running"]
-                            # Try to take a message from the channel
-                            try
-                                channel = MEMORY_BUS[full_topic]
-                                if isready(channel)
-                                    msg = take!(channel)
-                                    # Process the message
-                                    _process_message(agent_id, topic, msg)
-                                else
-                                    # No message available, sleep briefly
-                                    sleep(0.1)
-                                end
-                            catch e
-                                if e isa InvalidStateException && e.state == :closed
-                                    # Channel was closed, exit the loop
-                                    break
-                                else
-                                    @warn "Error processing message from memory channel" exception=e
-                                    # Sleep briefly to avoid tight loop on error
-                                    sleep(1)
-                                end
-                            end
-                        end
-                    catch e
-                        @error "Memory subscription task crashed" exception=(e, catch_backtrace())
-                    finally
-                        @debug "Memory subscription task for agent $agent_id on topic $topic stopped"
-                    end
-                end
-
-                # Start the task
-                schedule(subscription["task"])
-                @debug "Agent $agent_id subscribed to in-memory topic $full_topic"
-            elseif backend == REDIS && haskey(connection, "connection")
-                # For Redis, subscribe to the channel
-                try
-                    # Create a callback function
-                    callback = (channel, message) -> _process_message(agent_id, topic, JSON3.read(message))
-
-                    # Subscribe to the channel
-                    subscription["channel"] = full_topic
-                    Redis.subscribe(connection["connection"], full_topic, callback)
-                    @debug "Agent $agent_id subscribed to Redis channel $full_topic"
-                catch e
-                    @error "Failed to subscribe to Redis channel $full_topic" exception=e
-                    return false
-                end
-            elseif backend == NATS && haskey(connection, "connection")
-                # For NATS, subscribe to the subject
-                try
-                    # Create a callback function
-                    callback = (msg) -> _process_message(agent_id, topic, JSON3.read(String(msg.data)))
-
-                    # Subscribe to the subject
-                    sub = NATS.subscribe(connection["connection"], full_topic, callback)
-                    subscription["subscription"] = sub
-                    @debug "Agent $agent_id subscribed to NATS subject $full_topic"
-                catch e
-                    @error "Failed to subscribe to NATS subject $full_topic" exception=e
-                    return false
-                end
-            elseif backend == ZEROMQ && haskey(connection, "sub_socket")
-                # For ZeroMQ, subscribe to the topic
-                try
-                    # Subscribe to the topic
-                    ZMQ.subscribe(connection["sub_socket"], full_topic)
-                    subscription["topic"] = full_topic
-
-                    # Create a task that listens for messages
-                    subscription["running"] = true
-                    subscription["task"] = @task begin
-                        try
-                            @debug "Started ZeroMQ subscription task for agent $agent_id on topic $topic"
-                            while subscription["running"]
-                                # Try to receive a message
-                                try
-                                    # First frame is the topic
-                                    topic_frame = ZMQ.recv(connection["sub_socket"])
-                                    # Second frame is the message
-                                    message_frame = ZMQ.recv(connection["sub_socket"])
-
-                                    # Process the message
-                                    _process_message(agent_id, topic, JSON3.read(String(message_frame)))
-                                catch e
-                                    @warn "Error receiving ZeroMQ message" exception=e
-                                    # Sleep briefly to avoid tight loop on error
-                                    sleep(1)
-                                end
-                            end
-                        catch e
-                            @error "ZeroMQ subscription task crashed" exception=(e, catch_backtrace())
-                        finally
-                            @debug "ZeroMQ subscription task for agent $agent_id on topic $topic stopped"
-                        end
-                    end
-
-                    # Start the task
-                    schedule(subscription["task"])
-                    @debug "Agent $agent_id subscribed to ZeroMQ topic $full_topic"
-                catch e
-                    @error "Failed to subscribe to ZeroMQ topic $full_topic" exception=e
-                    return false
-                end
-            else
-                # NONE backend - just log the subscription
-                @info "SWARM: Agent $agent_id subscribed to topic $topic"
-            end
-
-            # Store the subscription
-            if !haskey(SWARM_SUBSCRIPTIONS, agent_id)
-                SWARM_SUBSCRIPTIONS[agent_id] = Dict{String, Any}()
-            end
-            SWARM_SUBSCRIPTIONS[agent_id][topic] = subscription
-
-            return true
-        end
-    end
-
-    # Process a received message
-    function _process_message(agent_id::String, topic::String, msg::Dict)
-        try
-            # Get the agent
-            ag = getAgent(agent_id)
-            if ag === nothing
-                @warn "Received message for unknown agent $agent_id"
-                return
-            end
-
-            # Add topic to the message if not already present
-            msg_to_enqueue = copy(msg)
-            if !haskey(msg_to_enqueue, "_source_topic")
-                msg_to_enqueue["_source_topic"] = topic
-            end
-
-            # Determine priority
-            prio = -float(get(msg_to_enqueue, "priority", 0.0))
-
-            # Enqueue the message
-            enqueue!(ag.queue, msg_to_enqueue, prio)
-            @debug "Enqueued message from topic $topic for agent $agent_id"
-
-            # Record metric
-            if get_config("metrics.enabled", true)
-                record_metric(agent_id, "swarm_messages_received", 1;
-                              type=Metrics.COUNTER,
-                              tags=Dict("topic" => topic))
-            end
+            ag.last_activity = now() # Mark activity
+            AgentMetrics.record_metric(ag.id, "fitness_evaluations", 1; type=AgentMetrics.COUNTER, tags=Dict("objective_function" => objective_function_id))
+            
+            return Dict("success" => true, "fitness_value" => fitness_value)
         catch e
-            @error "Error processing received swarm message on topic '$topic' for agent $agent_id" exception=(e, catch_backtrace())
+            @error "Agent $(ag.id) error during fitness evaluation for objective '$objective_function_id'" exception=(e, catch_backtrace())
+            AgentMetrics.record_metric(ag.id, "fitness_evaluation_errors", 1; type=AgentMetrics.COUNTER, tags=Dict("objective_function" => objective_function_id))
+            return Dict("success" => false, "error" => "Error during fitness evaluation: $(string(e))")
         end
-    end
+    end # Release agent lock
 end
 
-# Import swarm functions
-using .Swarm: subscribe_swarm!
-
-# Re-export the publish_to_swarm function from Swarm module
-const publish_to_swarm = Swarm.publish_to_swarm
-
-# Wrapper function for backward compatibility
-function publish_to_swarm(ag::Agent, topic::String, msg::Dict)
-    return Swarm.publish_to_swarm(ag.id, topic, msg)
-end
 
 end # module Agents
