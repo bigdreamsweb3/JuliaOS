@@ -18,41 +18,41 @@ using DataStructures # OrderedDict + PriorityQueue + CircularBuffer (CircularBuf
 # JSON3 and Atomic are used by Persistence, but might be needed here if
 # Agent struct serialization/deserialization logic was directly in this file.
 # For now, Persistence handles it.
-using Cron # Added for cron scheduling
+# using Cron # Added for cron scheduling
 
 # ----------------------------------------------------------------------
 # IMPORT OTHER MODULES
 # ----------------------------------------------------------------------
 # Assuming these are sibling modules in the same package (e.g., in src/)
-using .Config
-using .Persistence
-using .AgentMetrics
-using .AgentMonitor
-using .LLMIntegration
+using ..Config
+using ..AgentCore: Agent, AgentConfig, AgentStatus, CREATED, AbstractAgentMemory,
+        AbstractAgentQueue, AbstractLLMIntegration, Skill, Schedule, SkillState,
+        TaskStatus, register_ability, TaskResult, AGENTS_LOCK, AGENTS
+using ..Persistence
+using ..AgentMetrics
+# using ..AgentMonitor
+using ..LLMIntegration
 # Assuming Swarm is a separate module, potentially in another directory/package
 # If Swarm is in a different package, you'd need `using Swarm` in your Project.toml
 # and `using Swarm` here. If it's a submodule of JuliaOS, `using JuliaOS.Swarm`.
 # For now, we'll assume it's a sibling module in the same package for simplicity.
-import .Swarm # Use import to bring in specific functions/types
+# import .Swarm # Use import to bring in specific functions/types
 
 # Re-export functions/types from other modules that are part of the public API
-export Agent, AgentConfig, AgentStatus, AgentType,
-       createAgent, getAgent, listAgents, updateAgent, deleteAgent,
+export createAgent, getAgent, listAgents, updateAgent, deleteAgent,
        startAgent, stopAgent, pauseAgent, resumeAgent, getAgentStatus,
        executeAgentTask, getAgentMemory, setAgentMemory, clearAgentMemory,
-       register_ability, register_skill, Schedule, # Export Schedule struct
+       register_ability, register_skill,
        # Export Task Tracking functions/types (NEW)
-       getTaskStatus, getTaskResult, listAgentTasks, cancelTask, TaskStatus,
+       getTaskStatus, getTaskResult, listAgentTasks, cancelTask,
        # Export Agent Cloning function (NEW)
        cloneAgent,
        # Export Swarm functions (imported from Swarm module)
-       Swarm.publish_to_swarm, Swarm.subscribe_swarm!,
+       # Swarm.publish_to_swarm, Swarm.subscribe_swarm!,
        # Export metrics functions
        get_metrics, get_agent_metrics, reset_metrics, AgentMetrics, MetricType,
        # Export monitor functions
        start_monitor, stop_monitor, get_health_status, AgentMonitor, HealthStatus,
-       # Export Abstract Types for Pluggability (NEW)
-       AbstractAgentMemory, AbstractAgentQueue, AbstractLLMIntegration,
        # Export Default Pluggable Implementations (for users to reference concrete types)
        OrderedDictAgentMemory, PriorityAgentQueue, DefaultLLMIntegration,
        # Export event triggering function
@@ -71,152 +71,6 @@ const DEFAULT_SLEEP_MS = Config.get_config("agent.default_sleep_ms", 1000) # Kep
 const PAUSED_SLEEP_MS = Config.get_config("agent.paused_sleep_ms", 500)   # Kept for fallback
 const AUTO_RESTART = Config.get_config("agent.auto_restart", false)
 
-
-# ----------------------------------------------------------------------
-# ENUMS
-# ----------------------------------------------------------------------
-@enum AgentType begin
-    TRADING = 1; MONITOR = 2; ARBITRAGE = 3; DATA_COLLECTION = 4;
-    NOTIFICATION = 5; CUSTOM = 99; DEV = 100 # Added DEV type
-end
-
-@enum AgentStatus begin
-    CREATED = 1; INITIALIZING = 2; RUNNING = 3;
-    PAUSED = 4; STOPPED = 5; ERROR = 6
-end
-
-# NEW: Task Status Enum
-@enum TaskStatus begin
-    TASK_PENDING = 1
-    TASK_RUNNING = 2
-    TASK_COMPLETED = 3
-    TASK_FAILED = 4
-    TASK_CANCELLED = 5
-    TASK_UNKNOWN = 99 # For loading potentially old/corrupt data
-end
-
-# ----------------------------------------------------------------------
-# ABSTRACT TYPES for Pluggability (NEW)
-# ----------------------------------------------------------------------
-"""
-    AbstractAgentMemory
-
-Abstract type for agent memory implementations.
-Concrete types must implement:
-- `get_value(mem::AbstractAgentMemory, key::String)`
-- `set_value!(mem::AbstractAgentMemory, key::String, val)`
-- `delete_value!(mem::AbstractAgentMemory, key::String)`
-- `clear!(mem::AbstractAgentMemory)`
-- `length(mem::AbstractAgentMemory)`
-- `keys(mem::AbstractAgentMemory)`
-"""
-abstract type AbstractAgentMemory end
-
-"""
-    AbstractAgentQueue
-
-Abstract type for agent task queue implementations.
-Concrete types must implement:
-- `enqueue!(q::AbstractAgentQueue, item, priority::Real)`
-- `dequeue!(q::AbstractAgentQueue)`
-- `peek(q::AbstractAgentQueue)`
-- `isempty(q::AbstractAgentQueue)`
-- `length(q::AbstractAgentQueue)`
-"""
-abstract type AbstractAgentQueue end
-
-"""
-    AbstractLLMIntegration
-
-Abstract type for LLM integration implementations.
-Concrete types must implement:
-- `chat(llm::AbstractLLMIntegration, prompt::String; cfg::Dict)`
-"""
-abstract type AbstractLLMIntegration end
-
-# Note: Abstract types for Persistence and Swarm are better defined in their modules.
-
-
-# ----------------------------------------------------------------------
-# CONFIG STRUCT
-# ----------------------------------------------------------------------
-"""
-    AgentConfig
-
-Configuration for creating a new agent.
-
-# Fields
-- `name::String`: Agent name
-- `type::AgentType`: Agent type (enum)
-- `abilities::Vector{String}`: List of ability names this agent type can perform
-- `chains::Vector{String}`: List of chain names this agent type can execute
-- `parameters::Dict{String,Any}`: Agent-specific parameters
-- `llm_config::Dict{String,Any}`: Configuration for the LLM provider (can specify implementation type)
-- `memory_config::Dict{String,Any}`: Configuration for agent memory (can specify implementation type)
-- `queue_config::Dict{String,Any}`: Configuration for agent queue (can specify implementation type) (NEW)
-- `max_task_history::Int`: Maximum number of tasks to keep in history
-"""
-struct AgentConfig
-    name::String
-    type::AgentType
-    abilities::Vector{String}
-    chains::Vector{String}
-    parameters::Dict{String,Any}
-    llm_config::Dict{String,Any}
-    memory_config::Dict{String,Any}
-    queue_config::Dict{String,Any} # NEW: Queue config
-    max_task_history::Int
-
-    function AgentConfig(name::String, type::AgentType;
-                         abilities::Vector{String}=String[], chains::Vector{String}=String[],
-                         parameters::Dict{String,Any}=Dict(),
-                         llm_config::Dict{String,Any}=Dict(),
-                         memory_config::Dict{String,Any}=Dict(),
-                         queue_config::Dict{String,Any}=Dict(), # NEW: Default queue config
-                         max_task_history::Int=MAX_TASK_HISTORY)
-        isempty(llm_config) && (llm_config = Dict("provider"=>"openai","model"=>"gpt-4o-mini","temperature"=>0.7,"max_tokens"=>1024))
-        isempty(memory_config) && (memory_config = Dict("type"=>"ordered_dict","max_size"=>1000,"retention_policy"=>"lru")) # Added default type
-        isempty(queue_config) && (queue_config = Dict("type"=>"priority_queue")) # NEW: Default queue type
-        new(name, type, abilities, chains, parameters, llm_config, memory_config, queue_config, max_task_history)
-    end
-end
-
-# ----------------------------------------------------------------------
-# SKILL ENGINE (Registry defined here, processing logic in agent loop)
-# ----------------------------------------------------------------------
-# Schedule Struct for Advanced Scheduling is defined above
-
-"""
-    Skill
-
-Represents a scheduled skill an agent can perform.
-
-# Fields
-- `name::String`: Skill name
-- `fn::Function`: The Julia function implementing the skill logic
-- `schedule::Union{Schedule, Nothing}`: The scheduling definition (nothing for on-demand only)
-"""
-struct Skill
-    name::String
-    fn::Function
-    schedule::Union{Schedule, Nothing} # Use the new Schedule type
-end
-
-"""
-    SkillState
-
-Mutable state associated with an agent's skill.
-
-# Fields
-- `skill::Skill`: The skill definition
-- `xp::Float64`: Experience points for the skill
-- `last_exec::DateTime`: Timestamp of the last execution
-"""
-mutable struct SkillState
-    skill::Skill
-    xp::Float64
-    last_exec::DateTime
-end
 
 const SKILL_REGISTRY = Dict{String,Skill}()
 
@@ -245,67 +99,6 @@ end
 # TASK TRACKING (NEW)
 # ----------------------------------------------------------------------
 # TaskResult struct and TaskStatus enum are defined above
-
-
-# ----------------------------------------------------------------------
-# MAIN AGENT STRUCTURE
-# ----------------------------------------------------------------------
-"""
-    Agent
-
-Represents an autonomous agent instance.
-
-# Fields
-- `id::String`: Unique agent ID
-- `name::String`: Agent name
-- `type::AgentType`: Agent type
-- `status::AgentStatus`: Current status
-- `created::DateTime`: Creation timestamp
-- `updated::DateTime`: Last update timestamp (reflects status/config changes)
-- `config::AgentConfig`: Agent configuration
-- `memory::AbstractAgentMemory`: Agent memory implementation (NEW: Abstract Type)
-- `task_history::Vector{Dict{String,Any}}`: History of completed tasks (capped)
-- `skills::Dict{String,SkillState}`: State of registered skills
-- `queue::AbstractAgentQueue`: Agent task queue implementation (NEW: Abstract Type)
-- `task_results::Dict{String, TaskResult}`: Dictionary to track submitted tasks by ID (NEW)
-- `llm_integration::Union{AbstractLLMIntegration, Nothing}`: LLM integration instance (NEW: Abstract Type)
-- `swarm_connection::Any`: Swarm connection object (type depends on backend) (Moved from Swarm module concept)
-- `lock::ReentrantLock`: Lock for protecting mutable agent state (NEW)
-- `condition::Condition`: Condition variable for signaling the agent loop (NEW)
-- `last_error::Union{Exception, Nothing}`: The last error encountered (NEW)
-- `last_error_timestamp::Union{DateTime, Nothing}`: Timestamp of the last error (NEW)
-- `last_activity::DateTime`: Timestamp of the last significant activity (NEW)
-"""
-mutable struct Agent
-    id::String; name::String; type::AgentType; status::AgentStatus
-    created::DateTime; updated::DateTime; config::AgentConfig
-    memory::AbstractAgentMemory          # LRU memory (NEW: Abstract Type)
-    task_history::Vector{Dict{String,Any}}
-    skills::Dict{String,SkillState}
-    queue::AbstractAgentQueue        # message queue (stores task_ids) (NEW: Abstract Type)
-    task_results::Dict{String, TaskResult} # NEW: Dictionary to track tasks by ID
-    llm_integration::Union{AbstractLLMIntegration, Nothing} # NEW: LLM instance
-    swarm_connection::Any # Swarm connection object (type depends on backend) (NEW)
-    lock::ReentrantLock                      # NEW: Lock for protecting mutable state
-    condition::Condition                     # NEW: Condition variable for signaling loop
-    last_error::Union{Exception, Nothing}    # NEW: Last error object
-    last_error_timestamp::Union{DateTime, Nothing} # NEW: Timestamp of last error
-    last_activity::DateTime                  # NEW: Timestamp of last activity
-end
-
-# ----------------------------------------------------------------------
-# GLOBAL REGISTRIES & AGENT STORAGE
-# ----------------------------------------------------------------------
-const AGENTS          = Dict{String,Agent}() # Global dictionary of agents
-const AGENT_THREADS = Dict{String,Task}() # Map agent ID to its running task
-const ABILITY_REGISTRY = Dict{String,Function}() # Global registry of ability functions
-const AGENTS_LOCK     = ReentrantLock() # Lock for concurrent access to AGENTS dict and AGENT_THREADS
-
-
-# ----------------------------------------------------------------------
-# ABILITY REGISTRY (Definition here, registration function above) ------
-# ----------------------------------------------------------------------
-# register_ability function is defined above
 
 
 # ----------------------------------------------------------------------
@@ -778,7 +571,17 @@ function _agent_loop(ag::Agent)
     @info "Agent loop started for $(ag.name) ($ag.id)"
     try
         # The loop runs as long as the status is not STOPPED or ERROR
-        while lock(ag.lock) do ag.status != STOPPED && ag.status != ERROR end
+        while true
+            lock(ag.lock)
+
+            try
+                if ag.status == STOPPED || ag.status == ERROR
+                    break  # Exit loop
+                end
+            finally
+                unlock(ag.lock)
+            end
+
             work_done_this_iteration = false
 
             # Acquire lock for this iteration's processing

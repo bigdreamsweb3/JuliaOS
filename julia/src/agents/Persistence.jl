@@ -12,15 +12,9 @@ using DataStructures # For OrderedDict used in Agent memory
 # using Atomic # Not directly used, mv is atomic on POSIX, consider alternatives for Windows if needed
 
 # Import necessary types and global structures from sibling modules
-import .Agents: Agent, AgentConfig, AgentStatus, AgentType, SKILL_REGISTRY, SkillState, TaskResult, TaskStatus
-import .Agents: AGENTS, AGENTS_LOCK # Global agent store and its lock
-import .Agents: AbstractAgentMemory, AbstractAgentQueue, AbstractLLMIntegration # Abstract types
-import .Agents: OrderedDictAgentMemory, PriorityAgentQueue # Default concrete types for memory/queue
-# Import helper functions from Agents for reconstructing components (assuming they are accessible)
-import .Agents: _create_memory_component, _create_queue_component, _create_llm_component
-
-import .AgentMetrics: init_agent_metrics # To initialize metrics for loaded agents
-import .Config: get_config # For configuration values
+import ..Config: get_config # For configuration values
+import ..AgentMetrics: init_agent_metrics # To initialize metrics for loaded agents
+using ..AgentCore: Agent, AgentConfig, AgentStatus, AbstractAgentMemory, AbstractAgentQueue, AbstractLLMIntegration, AGENTS_LOCK, AGENTS
 
 # Export internal functions for use by other modules (like Agents.jl or main startup)
 export _save_state, _load_state, start_persistence_task, stop_persistence_task
@@ -291,11 +285,6 @@ function _load_state()
         end
     end # end for loop
     @info "Loaded $num_loaded agents from $(STORE_PATH[])."
-
-    catch e
-        # This outer catch is if the entire file read/parse fails initially
-        @error "Fatal error reading or parsing the main agent state file $(STORE_PATH[]). No agents loaded." exception=(e, catch_backtrace())
-    end
 end
 
 """
@@ -326,15 +315,18 @@ function start_persistence_task()::Bool
         PERSIST_TASK[] = @task begin
             @info "Agent persistence task started (interval: $(PERSIST_INTERVAL_SECONDS[])s, path: $(STORE_PATH[]))"
             try
-                while lock(PERSIST_LOCK) do PERSIST_RUNNING[] end # Check flag under lock
-                    sleep(PERSIST_INTERVAL_SECONDS[]) # Use the potentially updated interval
-                    # Re-check run flag after sleep, in case stop_persistence_task was called
-                    if lock(PERSIST_LOCK) do PERSIST_RUNNING[] end
-                        lock(AGENTS_LOCK) do # Acquire global AGENTS_LOCK before saving
-                           _save_state()
-                        end
-                    else
-                        break # Exit loop if no longer running
+                while true
+                    sleep(PERSIST_INTERVAL_SECONDS[])
+
+                    should_run = lock(PERSIST_LOCK) do
+                        PERSIST_RUNNING[]
+                    end
+                    if !should_run
+                        break
+                    end
+
+                    lock(AGENTS_LOCK) do
+                        _save_state()
                     end
                 end
             catch e

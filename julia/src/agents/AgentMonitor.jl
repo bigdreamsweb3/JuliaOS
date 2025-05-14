@@ -12,10 +12,11 @@ using Dates, Logging, Base.Threads
 
 # Import necessary modules and types
 # Assumes these modules are siblings within the 'agents' directory/module scope
-import .Config: get_config
+import ..Config: get_config
 # We need access to the Agent struct, its status, and lifecycle functions
 # This import style assumes Agents.jl defines "module Agents"
-import .Agents: Agent, AgentStatus, getAgentStatus, listAgents, startAgent, AGENTS, AGENTS_LOCK
+import ..AgentCore: Agent, AgentStatus, AGENTS, AGENTS_LOCK
+import ..Agents: getAgentStatus, listAgents, startAgent
 
 export start_monitor, stop_monitor, get_health_status, HealthStatus
 
@@ -182,7 +183,16 @@ function monitor_loop()
 
     @info "Agent monitor task started. Check interval: $(monitor_interval)s"
     try
-        while lock(MONITOR_LOCK) do MONITOR_RUNNING[] end # Check flag under lock
+        while true
+            running = false
+            lock(MONITOR_LOCK) do
+                running = MONITOR_RUNNING[]
+            end
+
+            if !running
+                break
+            end
+
             _perform_health_check()
             sleep(monitor_interval)
         end
