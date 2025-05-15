@@ -15,7 +15,7 @@ try
     include("../agents/Persistence.jl")
     include("../agents/LLMIntegration.jl")
     include("../agents/Agents.jl")
-    include("../agents/AgentMonitor.jl")
+    # include("../agents/AgentMonitor.jl")
     
     # Make Agent modules available
     using .Config

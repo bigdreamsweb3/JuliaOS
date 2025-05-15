@@ -25,9 +25,15 @@ using DataStructures # OrderedDict + PriorityQueue + CircularBuffer (CircularBuf
 # ----------------------------------------------------------------------
 # Assuming these are sibling modules in the same package (e.g., in src/)
 using ..Config
-using ..AgentCore: Agent, AgentConfig, AgentStatus, CREATED, AbstractAgentMemory,
-        AbstractAgentQueue, AbstractLLMIntegration, Skill, Schedule, SkillState,
-        TaskStatus, register_ability, TaskResult, AGENTS_LOCK, AGENTS
+using ..AgentCore: Agent, AgentConfig, AgentStatus,
+        AbstractAgentMemory, AbstractAgentQueue, AbstractLLMIntegration,
+        CREATED, INITIALIZING, RUNNING, PAUSED, STOPPED, ERROR,
+        Skill, Schedule, SkillState,
+        register_ability,
+        AGENTS, AGENT_THREADS, ABILITY_REGISTRY, AGENTS_LOCK,
+        TaskStatus, TaskResult,
+        TASK_PENDING, TASK_RUNNING, TASK_COMPLETED, TASK_FAILED, TASK_CANCELLED, TASK_UNKNOWN,
+        OrderedDictAgentMemory, PriorityAgentQueue
 using ..Persistence
 using ..AgentMetrics
 # using ..AgentMonitor
@@ -54,7 +60,7 @@ export createAgent, getAgent, listAgents, updateAgent, deleteAgent,
        # Export monitor functions
        start_monitor, stop_monitor, get_health_status, AgentMonitor, HealthStatus,
        # Export Default Pluggable Implementations (for users to reference concrete types)
-       OrderedDictAgentMemory, PriorityAgentQueue, DefaultLLMIntegration,
+       DefaultLLMIntegration,
        # Export event triggering function
        trigger_agent_event,
        # Export fitness evaluation function
@@ -95,42 +101,6 @@ function register_skill(name::String, fn::Function; schedule::Union{Real, Schedu
     @info "Registered skill '$name' (schedule = $(isnothing(schedule) ? "on-demand" : schedule))"
 end
 
-# ----------------------------------------------------------------------
-# TASK TRACKING (NEW)
-# ----------------------------------------------------------------------
-# TaskResult struct and TaskStatus enum are defined above
-
-
-# ----------------------------------------------------------------------
-# DEFAULT PLUGGABLE IMPLEMENTATIONS (Examples - these would ideally be in separate files)
-# ----------------------------------------------------------------------
-
-# Example Default Memory: OrderedDict Memory
-struct OrderedDictAgentMemory <: AbstractAgentMemory
-    data::OrderedDict{String, Any}
-    max_size::Int
-end
-# Implement AbstractAgentMemory interface for OrderedDictAgentMemory
-get_value(mem::OrderedDictAgentMemory, key::String) = get(mem.data, key, nothing)
-set_value!(mem::OrderedDictAgentMemory, key::String, val) = (mem.data[key] = val; _touch!(mem.data, key); _enforce_lru_size!(mem)) # Need helper for size
-delete_value!(mem::OrderedDictAgentMemory, key::String) = delete!(mem.data, key)
-clear!(mem::OrderedDictAgentMemory) = empty!(mem.data)
-Base.length(mem::OrderedDictAgentMemory) = length(mem.data)
-Base.keys(mem::OrderedDictAgentMemory) = keys(mem.data)
-_touch!(mem::OrderedDict{String,Any}, key) = (val = mem[key]; delete!(mem,key); mem[key] = val) # Helper for LRU
-_enforce_lru_size!(mem::OrderedDictAgentMemory) = while length(mem.data) > mem.max_size; popfirst!(mem.data); end # Helper for size limit
-
-# Example Default Queue: Priority Queue
-struct PriorityAgentQueue <: AbstractAgentQueue
-    queue::PriorityQueue{Any, Float64} # Stores task_ids
-end
-# Implement AbstractAgentQueue interface for PriorityAgentQueue
-DataStructures.enqueue!(q::PriorityAgentQueue, item, priority::Real) = enqueue!(q.queue, item, priority)
-DataStructures.dequeue!(q::PriorityAgentQueue) = dequeue!(q.queue)
-DataStructures.peek(q::PriorityAgentQueue) = peek(q.queue)
-Base.isempty(q::PriorityAgentQueue) = isempty(q.queue)
-Base.length(q::PriorityAgentQueue) = length(q.queue)
-
 # Example Default LLM Integration (Uses LLMIntegration module)
 struct DefaultLLMIntegration <: AbstractLLMIntegration
     # Could store config or other state here if needed
@@ -169,10 +139,10 @@ end
 
 function _create_llm_component(config::Dict{String, Any})
     provider = lowercase(get(config, "provider", "none"))
-    if provider != "none"
+    if provider == "openai"
         # For now, we only have DefaultLLMIntegration which wraps LLMIntegration module
         # If you had other LLM integration concrete types, you'd choose here based on provider
-        return DefaultLLMIntegration()
+        return LLMIntegration.OpenAILLMIntegration()
     else
         return nothing # No LLM integration needed
     end
@@ -592,7 +562,9 @@ function _agent_loop(ag::Agent)
                     @debug "Agent $(ag.name) ($ag.id) is paused. Waiting..."
                     ag.last_activity = now() # Update activity before waiting
                     # Release the lock while waiting on the condition
-                    wait(ag.condition, ag.lock)
+                    unlock(ag.lock)   # manually release the ReentrantLock
+                    wait(ag.condition) # wait (condition internally uses SpinLock)
+                    lock(ag.lock)
                     # Lock is re-acquired upon waking
                     @debug "Agent $(ag.name) ($ag.id) woke up."
                     # After waking, the loop condition `ag.status != STOPPED && ag.status != ERROR` is checked again.
@@ -719,7 +691,9 @@ function _agent_loop(ag::Agent)
                     @debug "Agent $(ag.name) ($ag.id) idle. Waiting..."
                     ag.last_activity = now() # Update activity before waiting
                     # Release the lock while waiting on the condition
-                    wait(ag.condition, ag.lock)
+                    unlock(ag.lock)   # manually release the ReentrantLock
+                    wait(ag.condition) # wait (condition internally uses SpinLock)
+                    lock(ag.lock)
                     # Lock is re-acquired upon waking
                     @debug "Agent $(ag.name) ($ag.id) woke up."
                 else
@@ -1142,7 +1116,13 @@ function executeAgentTask(id::String, task::Dict{String,Any})::Dict{String, Any}
     submitted_time = now()
 
     # Create the initial TaskResult
-    task_result = TaskResult(task_id, TASK_PENDING, submitted_time, nothing, nothing, task, nothing, nothing)
+    task_result = TaskResult(task_id;
+                         status=TASK_PENDING,
+                         submitted=submitted_time,
+                         start_time=nothing,
+                         end_time=nothing,
+                         output_result=nothing,
+                         error_details=nothing)
 
     lock(ag.lock) do
         # Check if agent is in a state that can receive tasks (RUNNING or PAUSED)
