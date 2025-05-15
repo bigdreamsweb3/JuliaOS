@@ -7,14 +7,18 @@ Handles saving and loading agent state to/from disk, including periodic auto-sav
 """
 module Persistence
 
-using Dates, JSON3, Logging, Base.Threads
+using Dates, UUIDs, JSON3, Logging, Base.Threads
 using DataStructures # For OrderedDict used in Agent memory
 # using Atomic # Not directly used, mv is atomic on POSIX, consider alternatives for Windows if needed
 
 # Import necessary types and global structures from sibling modules
 import ..Config: get_config # For configuration values
 import ..AgentMetrics: init_agent_metrics # To initialize metrics for loaded agents
-using ..AgentCore: Agent, AgentConfig, AgentStatus, AbstractAgentMemory, AbstractAgentQueue, AbstractLLMIntegration, AGENTS_LOCK, AGENTS
+using ..AgentCore: Agent, AgentConfig, AgentStatus, AgentType, CUSTOM,
+        AbstractAgentMemory, AbstractAgentQueue, AbstractLLMIntegration,
+        OrderedDictAgentMemory,
+        AGENTS_LOCK, AGENTS,
+        TaskResult
 
 # Export internal functions for use by other modules (like Agents.jl or main startup)
 export _save_state, _load_state, start_persistence_task, stop_persistence_task
@@ -81,10 +85,10 @@ function _save_state()
                  serialized_task_results[task_id] = Dict(
                      "task_id" => tr.task_id,
                      "status" => Int(tr.status), # Save enum as Int
-                     "submitted_time" => string(tr.submitted_time), # Use UTC if not already
+                     "submitted" => string(tr.submitted), # Use UTC if not already
                      "start_time" => isnothing(tr.start_time) ? nothing : string(tr.start_time),
                      "end_time" => isnothing(tr.end_time) ? nothing : string(tr.end_time),
-                     "input_task" => tr.input_task,
+                    #  "input_task" => tr.input_task,
                      "output_result" => tr.output_result, # Assumes this is JSON-serializable
                      "error_details" => isnothing(tr.error_details) ? nothing : string(tr.error_details)
                  )
@@ -162,16 +166,31 @@ function _load_state()
         try
             # Reconstruct AgentConfig
             cfg_data = get(agent_obj_data, "config", Dict())
+            # Coerce the raw "type" field into an AgentType enum
+            raw_type = get(cfg_data, "type", CUSTOM)
+            type_enum = if raw_type isa Integer
+                AgentType(raw_type)
+            elseif raw_type isa AbstractString
+                try
+                    AgentType(Symbol(raw_type))
+                catch
+                    CUSTOM
+                end
+            else
+                CUSTOM
+            end
             # Provide defaults for AgentConfig fields if missing from saved data
             agent_cfg = AgentConfig(
                 get(cfg_data, "name", "Loaded Agent (Name Missing)"),
-                Agents.AgentType(Int(get(cfg_data, "type", Int(Agents.CUSTOM)))),
-                abilities = get(cfg_data, "abilities", String[]),
-                chains = get(cfg_data, "chains", String[]),
-                parameters = get(cfg_data, "parameters", Dict{String,Any}()),
-                llm_config = get(cfg_data, "llm_config", Dict{String,Any}()),
-                memory_config = get(cfg_data, "memory_config", Dict{String,Any}()),
-                queue_config = get(cfg_data, "queue_config", Dict{String,Any}()),
+                type_enum,
+                # abilities = get(cfg_data, "abilities", String[]),
+                # chains = get(cfg_data, "chains", String[]),
+                abilities = Vector{String}(get(cfg_data, "abilities", String[])),
+                chains = Vector{String}(get(cfg_data, "chains", String[])),
+                parameters = Dict{String,Any}(string(k)=>v for (k,v) in get(cfg_data, "parameters", Dict{String,Any}())),
+                llm_config = Dict{String,Any}(string(k)=>v for (k,v) in get(cfg_data, "llm_config", Dict{String,Any}())),
+                memory_config = Dict{String,Any}(string(k)=>v for (k,v) in get(cfg_data, "memory_config", Dict{String,Any}())),
+                queue_config = Dict{String,Any}(string(k)=>v for (k,v) in get(cfg_data, "queue_config", Dict{String,Any}())),
                 max_task_history = get(cfg_data, "max_task_history", get_config("agent.max_task_history", 100))
             )
 
@@ -189,7 +208,7 @@ function _load_state()
                              get(tr_data, "task_id", task_id_str),
                              Agents.TaskStatus(Int(get(tr_data, "status", Int(Agents.TASK_UNKNOWN)))),
                              submitted_time, start_time, end_time,
-                             get(tr_data, "input_task", Dict{String, Any}()),
+                            #  get(tr_data, "input_task", Dict{String, Any}()),
                              get(tr_data, "output_result", nothing),
                              haskey(tr_data, "error_details") && !isnothing(tr_data["error_details"]) ? ErrorException(string(tr_data["error_details"])) : nothing
                          )
@@ -390,9 +409,10 @@ function __init__()
     _update_config_dependent_constants!() # Set STORE_PATH etc. based on loaded config
 
     # Load agent state from disk. Requires AGENTS_LOCK.
-    lock(AGENTS_LOCK) do
-        _load_state()
-    end
+    # TODO: uncomment line
+    # lock(AGENTS_LOCK) do
+    #     _load_state()
+    # end
 
     # Start the periodic persistence task if auto-persist is enabled
     if get_config("storage.auto_persist", true)

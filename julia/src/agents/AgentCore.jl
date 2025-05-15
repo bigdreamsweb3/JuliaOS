@@ -6,6 +6,7 @@ export Agent, AgentConfig, AgentStatus, AgentType,
        AbstractAgentMemory, AbstractAgentQueue, AbstractLLMIntegration, AGENTS_LOCK, ABILITY_REGISTRY, register_ability, AGENTS
 
 using UUIDs, Dates
+using DataStructures
 
 # ----------------------------------------------------------------------
 # CONSTANTS
@@ -114,6 +115,42 @@ Concrete types must implement:
 - `chat(llm::AbstractLLMIntegration, prompt::String; cfg::Dict)`
 """
 abstract type AbstractLLMIntegration end
+
+# ----------------------------------------------------------------------
+# DEFAULT PLUGGABLE IMPLEMENTATIONS
+# ----------------------------------------------------------------------
+# Example Default Memory: OrderedDict Memory
+struct OrderedDictAgentMemory <: AbstractAgentMemory
+    data::OrderedDict{String, Any}
+    max_size::Int
+end
+# Implement AbstractAgentMemory interface for OrderedDictAgentMemory
+get_value(mem::OrderedDictAgentMemory, key::String) = get(mem.data, key, nothing)
+set_value!(mem::OrderedDictAgentMemory, key::String, val) = (mem.data[key] = val; _touch!(mem.data, key); _enforce_lru_size!(mem)) # Need helper for size
+delete_value!(mem::OrderedDictAgentMemory, key::String) = delete!(mem.data, key)
+clear!(mem::OrderedDictAgentMemory) = empty!(mem.data)
+Base.length(mem::OrderedDictAgentMemory) = length(mem.data)
+Base.keys(mem::OrderedDictAgentMemory) = keys(mem.data)
+_touch!(mem::OrderedDict{String,Any}, key) = (val = mem[key]; delete!(mem,key); mem[key] = val) # Helper for LRU
+_enforce_lru_size!(mem::OrderedDictAgentMemory) = while length(mem.data) > mem.max_size; popfirst!(mem.data); end # Helper for size limit
+
+# Example Default Queue: Priority Queue
+struct PriorityAgentQueue <: AbstractAgentQueue
+    queue::PriorityQueue{Any, Float64} # Stores task_ids
+end
+# Implement AbstractAgentQueue interface for PriorityAgentQueue
+DataStructures.enqueue!(q::PriorityAgentQueue, item, priority::Real) = enqueue!(q.queue, item, priority)
+DataStructures.dequeue!(q::PriorityAgentQueue) = dequeue!(q.queue)
+DataStructures.peek(q::PriorityAgentQueue) = peek(q.queue)
+Base.isempty(q::PriorityAgentQueue) = isempty(q.queue)
+Base.length(q::PriorityAgentQueue) = length(q.queue)
+
+# # Example Default LLM Integration (Uses LLMIntegration module)
+# struct DefaultLLMIntegration <: AbstractLLMIntegration
+#     # Could store config or other state here if needed
+# end
+# # Implement AbstractLLMIntegration interface
+# LLMIntegration.chat(llm::DefaultLLMIntegration, prompt::String; cfg::Dict) = LLMIntegration.chat(prompt; cfg=cfg)
 
 # ----------------------------------------------------------------------
 # CONFIG STRUCT
