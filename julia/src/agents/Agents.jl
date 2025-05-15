@@ -168,10 +168,10 @@ end
 
 function _create_llm_component(config::Dict{String, Any})
     provider = lowercase(get(config, "provider", "none"))
-    if provider != "none"
+    if provider == "openai"
         # For now, we only have DefaultLLMIntegration which wraps LLMIntegration module
         # If you had other LLM integration concrete types, you'd choose here based on provider
-        return DefaultLLMIntegration()
+        return LLMIntegration.OpenAILLMIntegration()
     else
         return nothing # No LLM integration needed
     end

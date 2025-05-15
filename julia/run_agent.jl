@@ -1,6 +1,9 @@
 using Pkg
 Pkg.activate(".")
 
+using DotEnv
+DotEnv.load!()
+
 using JuliaOS
 
 function main()
@@ -24,6 +27,10 @@ function main()
 
     # execute ping task
     result = JuliaOS.JuliaOSFramework.Agents.executeAgentTask(agent.id, Dict{String, Any}("ability" => "ping"))
+    @show result
+
+    # execute llm chat task
+    result = JuliaOS.JuliaOSFramework.Agents.executeAgentTask(agent.id, Dict{String, Any}("ability" => "llm_chat", "prompt" => "how are you?"))
     @show result
 end
 
