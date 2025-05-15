@@ -168,28 +168,28 @@ Holds the lifecycle info and outcome of a single agent task.
 - `task_id::String`               – unique identifier for this task  
 - `status::TaskStatus`            – current lifecycle status  
 - `submitted::DateTime`           – when the task was enqueued  
-- `started::Union{DateTime,Nothing}`    – when execution began (nothing if never started)  
-- `finished::Union{DateTime,Nothing}`   – when execution ended (nothing if still pending/running)  
-- `result::Any`                   – the returned value on success (or partial output)  
-- `error::Union{String,Nothing}`  – error message if the task failed, else `nothing`  
+- `start_time::Union{DateTime,Nothing}`    – when execution began (nothing if never started)
+- `end_time::Union{DateTime,Nothing}`   – when execution ended (nothing if still pending/running)
+- `output_result::Any`                   – the returned value on success (or partial output)
+- `error_details::Union{String,Nothing}`  – error message if the task failed, else `nothing`
 """
 mutable struct TaskResult
     task_id::String
     status::TaskStatus
     submitted::DateTime
-    started::Union{DateTime,Nothing}
-    finished::Union{DateTime,Nothing}
-    result::Any
-    error::Union{String,Nothing}
+    start_time::Union{DateTime, Nothing}
+    end_time::Union{DateTime, Nothing}
+    output_result::Any
+    error_details::Union{Exception, Nothing}
 
     function TaskResult(task_id::String; 
                         status::TaskStatus=TASK_PENDING,
                         submitted::DateTime=now(),
-                        started::Union{DateTime,Nothing}=nothing,
-                        finished::Union{DateTime,Nothing}=nothing,
-                        result::Any=nothing,
-                        error::Union{String,Nothing}=nothing)
-        new(task_id, status, submitted, started, finished, result, error)
+                        start_time::Union{DateTime,Nothing}=nothing,
+                        end_time::Union{DateTime,Nothing}=nothing,
+                        output_result::Any=nothing,
+                        error_details::Union{Exception,Nothing}=nothing)
+        new(task_id, status, submitted, start_time, end_time, output_result, error_details)
     end
 end
 
