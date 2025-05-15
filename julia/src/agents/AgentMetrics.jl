@@ -12,20 +12,8 @@ using Dates, DataStructures, Statistics, Logging
 # Import necessary functions from the Config module.
 # Assumes Config.jl defines "module Config" and is a sibling to this file
 # within the "agents" directory/module scope.
-import .Config: get_config
-# Import AGENTS store and lock from Agents.jl for system-wide metrics
-try
-    import ..Agents: AGENTS, AGENTS_LOCK, AgentStatus, RUNNING, PAUSED # Assuming these are exported or accessible
-catch e
-    @warn "AgentMetrics.jl: Could not import from Agents.jl for system metrics. System metrics will be limited."
-    # Define stubs if import fails
-    const AGENTS = Dict()
-    const AGENTS_LOCK = ReentrantLock()
-    @enum AgentStatusImportFallback RUNNING_FALLBACK PAUSED_FALLBACK
-    const RUNNING = RUNNING_FALLBACK
-    const PAUSED = PAUSED_FALLBACK
-end
-
+import ..Config: get_config
+import ..AgentCore: AGENTS, AGENTS_LOCK, AgentStatus, RUNNING, PAUSED
 
 export record_metric, get_metrics, get_agent_metrics, reset_metrics, get_system_summary_metrics,
        MetricType, COUNTER, GAUGE, HISTOGRAM, SUMMARY # Export MetricType enum and its values

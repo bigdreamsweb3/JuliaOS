@@ -13,7 +13,7 @@ using JSON3 # Needed for parsing/serializing provider-specific configs and reque
 using HTTP  # For making direct HTTP calls
 
 # Import the abstract type from the Agents module
-import ..Agents: AbstractLLMIntegration # Relative import for sibling module in parent dir
+import ..AgentCore: AbstractLLMIntegration # Relative import for sibling module in parent dir
 
 export chat, get_provider_status # Export the new status function
 
