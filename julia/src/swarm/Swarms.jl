@@ -11,30 +11,40 @@ using JSON3
 using Redis # Added for networked swarm backend
 
 # Assuming SwarmBase.jl is in the same directory
-using .SwarmBase 
+using ..SwarmBase
+
+include("algorithms/de.jl")
+include("algorithms/ga.jl")
+include("algorithms/pso.jl")
+
+using .PSOAlgorithmImpl: PSOAlgorithm
+using .DEAlgorithmImpl: DEAlgorithm
+using .GAAlgorithmImpl: GAAlgorithm
+
 # Assuming Agents.jl and its submodules are accessible from the parent scope 
 # (e.g., if JuliaOSFramework.jl includes both this and Agents)
+
+module AgentsStub # Fallback if Agents module fails to load
+    struct Agent end
+    getAgent(id) = nothing
+    module Swarm
+        subscribe_swarm!(agent_id, topic) = @warn "Agents.Swarm unavailable (stub): Cannot subscribe $agent_id to $topic"
+        publish_to_swarm(sender_id, topic, msg) = @warn "Agents.Swarm unavailable (stub): Cannot publish to $topic"
+        unsubscribe_swarm!(agent_id, topic) = @warn "Agents.Swarm unavailable (stub): Cannot unsubscribe $agent_id from $topic"
+    end
+end
+
 try
-    using ..agents.Agents 
-    using ..agents.Config # Used for swarm.backend and swarm.connection_string
-    using ..agents.AgentMetrics 
+    using ..Agents
+    using ..Config # Used for swarm.backend and swarm.connection_string
+    using ..AgentMetrics
     @info "Swarms.jl: Successfully using main Agents module."
 catch e
     @warn "Swarms.jl: Could not load main Agents module. Using internal stubs."
-    module AgentsStub # Fallback if Agents module fails to load
-        struct Agent end
-        getAgent(id) = nothing
-        module Swarm 
-            subscribe_swarm!(agent_id, topic) = @warn "Agents.Swarm unavailable (stub): Cannot subscribe $agent_id to $topic"
-            publish_to_swarm(sender_id, topic, msg) = @warn "Agents.Swarm unavailable (stub): Cannot publish to $topic"
-            unsubscribe_swarm!(agent_id, topic) = @warn "Agents.Swarm unavailable (stub): Cannot unsubscribe $agent_id from $topic"
-        end
-    end
     using .AgentsStub
     get_config(key, default) = default # Dummy
     record_metric(args...; kwargs...) = nothing # Dummy
 end
-
 
 export Swarm, SwarmConfig, SwarmStatus, createSwarm, getSwarm, listSwarms, startSwarm, stopSwarm,
        getSwarmStatus, addAgentToSwarm, removeAgentFromSwarm, getSharedState, updateSharedState!,
@@ -183,7 +193,7 @@ function _deserialize_optimization_problem(data::Dict)::Union{OptimizationProble
     try
         obj_func_name = get(data, "objective_function_name", "default_sum_objective")
         resolved_obj_func = get_objective_function_by_name(obj_func_name)
-        return OptimizationProblem(data["dimensions"], [tuple(b...) for b in data["bounds"]], 
+        return OptimizationProblem(data["dimensions"], Tuple{Float64, Float64}[(Float64(b[1]), Float64(b[2])) for b in data["bounds"]],
                                    resolved_obj_func; is_minimization=data["is_minimization"])
     catch e @error "Error deserializing OptimizationProblem" data=data error=e; return nothing end
 end
@@ -216,15 +226,15 @@ end
 
 function _load_swarms_state()
     _ensure_storage_dir(); isfile(SWARM_STORE_PATH[]) || return
-    try raw_data = JSON3.read(read(SWARM_STORE_PATH[], String))
+    try raw_data = JSON3.read(read(SWARM_STORE_PATH[], String), Dict{String,Any})
         loaded_count = 0
         lock(SWARMS_LOCK) do; empty!(SWARMS_REGISTRY)
             for (id_str, sd) in raw_data; try
                 cfg_data = sd["config"]; prob_def_data = cfg_data["problem_definition"]
-                deser_prob = _deserialize_optimization_problem(prob_def_data)
+                deser_prob = _deserialize_optimization_problem(Dict(prob_def_data))
                 isnothing(deser_prob) && (@warn "Skipping swarm $id_str: problem deserialization error."; continue)
                 config = SwarmConfig(cfg_data["name"], cfg_data["algorithm_type"], deser_prob; 
-                                     algorithm_params=cfg_data["algorithm_params"], objective_desc=cfg_data["objective_description"],
+                                     algorithm_params = cfg_data["algorithm_params"], objective_desc=cfg_data["objective_description"],
                                      max_iter=cfg_data["max_iterations"], target_fit=cfg_data["target_fitness"])
                 swarm = Swarm(sd["id"], sd["name"], config)
                 swarm.status = SwarmStatus(sd["status"]); swarm.created_at = DateTime(sd["created_at"]); swarm.updated_at = DateTime(sd["updated_at"])
@@ -250,21 +260,84 @@ function sphere_objective(pos::Vector{Float64})::Float64 sum(x^2 for x in pos) e
 function rastrigin_objective(pos::Vector{Float64})::Float64 10.0*length(pos) + sum(x^2 - 10.0*cos(2*π*x) for x in pos) end
 function _register_default_objectives() register_objective_function!("sphere", sphere_objective); register_objective_function!("rastrigin", rastrigin_objective); register_objective_function!("default_sum_objective", (p->sum(p))) end
 
-createSwarm(config::SwarmConfig) = lock(SWARMS_LOCK) do SWARMS_REGISTRY["swarm-"*string(uuid4())[1:8]] = Swarm("swarm-"*string(uuid4())[1:8], config.name, config); @info "Created swarm $(config.name)"; _save_swarms_state(); SWARMS_REGISTRY[collect(keys(SWARMS_REGISTRY))[end]] end
-getSwarm(id::String) = lock(SWARMS_LOCK) do get(SWARMS_REGISTRY, id, nothing) end
-listSwarms(; st=nothing) = lock(SWARMS_LOCK) do isnothing(st) ? collect(values(SWARMS_REGISTRY)) : filter(s->s.status==st, collect(values(SWARMS_REGISTRY))) end
-function addAgentToSwarm(swarm_id::String, agent_id::String) lock(SWARMS_LOCK) do s=getSwarm(swarm_id); isnothing(s) && return false; !(agent_id in s.agents) && (push!(s.agents, agent_id); s.updated_at=now(UTC); _save_swarms_state()); true end end
-function removeAgentFromSwarm(swarm_id::String, agent_id::String) lock(SWARMS_LOCK) do s=getSwarm(swarm_id); isnothing(s) && return false; agent_id in s.agents && (filter!(id->id!=agent_id, s.agents); s.updated_at=now(UTC); _save_swarms_state(); true) end end
+function createSwarm(config::SwarmConfig)
+    lock(SWARMS_LOCK) do
+        swarm_id = "swarm-" * string(uuid4())[1:8]
+        swarm = Swarm(swarm_id, config.name, config)
+        SWARMS_REGISTRY[swarm_id] = swarm
+        @info "Created swarm $(config.name)"
+        _save_swarms_state()
+        return swarm
+    end
+end
+
+getSwarm(id::String) = lock(SWARMS_LOCK) do
+    get(SWARMS_REGISTRY, id, nothing)
+end
+
+function listSwarms(; st=nothing)
+    lock(SWARMS_LOCK) do
+        if isnothing(st)
+            return collect(values(SWARMS_REGISTRY))
+        else
+            return filter(s -> s.status == st, collect(values(SWARMS_REGISTRY)))
+        end
+    end
+end
+
+function addAgentToSwarm(swarm_id::String, agent_id::String)
+    lock(SWARMS_LOCK) do
+        s = getSwarm(swarm_id)
+        isnothing(s) && return false
+
+        if !(agent_id in s.agents)
+            push!(s.agents, agent_id)
+            s.updated_at = now(UTC)
+            _save_swarms_state()
+        end
+
+        return true
+    end
+end
+
+function removeAgentFromSwarm(swarm_id::String, agent_id::String)
+    lock(SWARMS_LOCK) do
+        s = getSwarm(swarm_id)
+        isnothing(s) && return false
+
+        if agent_id in s.agents
+            filter!(id -> id != agent_id, s.agents)
+            s.updated_at = now(UTC)
+            _save_swarms_state()
+        end
+
+        return true
+    end
+end
+
+struct MockAlg <: AbstractSwarmAlgorithm end
+
+SwarmBase.initialize!(::MockAlg, ::Any, ::Any, ::Any) = ()
+SwarmBase.step!(::MockAlg, ::Any, ::Any, ::Any, ::Any, ::Any) = SwarmSolution([0.0], 0.0)
+SwarmBase.should_terminate(::MockAlg, ::Any, ::Any, ::Any, ::Any, ::Any) = true
 
 function _instantiate_algorithm(swarm::Swarm)
-    algo_type = swarm.config.algorithm_type; params = swarm.config.algorithm_params
+    algo_type = swarm.config.algorithm_type
+    params = swarm.config.algorithm_params
     try
-        if algo_type == "PSO" include("algorithms/PSO.jl"); return PSOAlgorithmImpl.PSOAlgorithm(;get(params,"pso_specific_params",Dict())...) end
-        if algo_type == "DE" include("algorithms/DE.jl"); return DEAlgorithmImpl.DEAlgorithm(;get(params,"de_specific_params",Dict())...) end
-        if algo_type == "GA" include("algorithms/GA.jl"); return GAAlgorithmImpl.GAAlgorithm(;get(params,"ga_specific_params",Dict())...) end
-        @error "Unknown algorithm type: $algo_type"
-    catch e @error "Error instantiating $algo_type" error=e end
-    struct MockAlg <: AbstractSwarmAlgorithm end; SwarmBase.initialize!(::MockAlg,::Any,::Any,::Any)=(); SwarmBase.step!(::MockAlg,::Any,::Any,::Any,::Any,::Any)=SwarmSolution([0.0],0.0); SwarmBase.should_terminate(::MockAlg,::Any,::Any,::Any,::Any,::Any)=true; return MockAlg()
+        if algo_type == "PSO"
+            return PSOAlgorithm(; get(params, "pso_specific_params", Dict())...)
+        elseif algo_type == "DE"
+            return DEAlgorithm(; get(params, "de_specific_params", Dict())...)
+        elseif algo_type == "GA"
+            return GAAlgorithm(; get(params, "ga_specific_params", Dict())...)
+        else
+            @error "Unknown algorithm type: $algo_type"
+        end
+    catch e
+        @error "Error instantiating $algo_type" error=e
+        return MockAlg()
+    end
 end
 
 function _swarm_algorithm_loop(swarm::Swarm)

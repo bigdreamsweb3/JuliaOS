@@ -128,7 +128,7 @@ function _generate_offspring_candidates(alg::GAAlgorithm, problem::OptimizationP
     if alg.elitism_count > 0 && !isempty(alg.population)
         # Sort population by fitness to easily pick elites
         sort!(alg.population, by = c -> c.fitness, rev = !problem.is_minimization)
-        for i in 1:min(alg.elitism_count, length(alg.population)))
+        for i in 1:min(alg.elitism_count, length(alg.population))
             push!(elite_chromosomes, deepcopy(alg.population[i]))
         end
     end
@@ -257,7 +257,7 @@ function SwarmBase.select_next_generation!(alg::GAAlgorithm, problem::Optimizati
     # 1. Elitism: Carry over best individuals from the current `alg.population`
     if alg.elitism_count > 0 && !isempty(alg.population)
         sort!(alg.population, by = c -> c.fitness, rev = !problem.is_minimization)
-        for i in 1:min(alg.elitism_count, length(alg.population)))
+        for i in 1:min(alg.elitism_count, length(alg.population))
             push!(new_population, deepcopy(alg.population[i]))
         end
     end

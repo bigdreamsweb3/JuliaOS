@@ -30,21 +30,17 @@ catch e
 end
 
 # --- Include Core Swarm Modules ---
-# try
-#     include("../swarm/SwarmBase.jl")
-#     include("../swarm/Swarms.jl")
+try
+    include("../swarm/SwarmBase.jl")
+    include("../swarm/Swarms.jl")
 
-#     # Make Swarm modules available
-#     using .SwarmBase
-#     using .Swarms
-#     @info "JuliaOSFramework: Swarm modules included and using'd successfully."
-# catch e
-#     @error "JuliaOSFramework: Critical error including Swarm modules." exception=(e, catch_backtrace())
-#     module SwarmBaseStub end
-#     module SwarmsStub end
-#     const SwarmBase = SwarmBaseStub
-#     const Swarms = SwarmsStub
-# end
+    # Make Swarm modules available
+    using .SwarmBase
+    using .Swarms
+    @info "JuliaOSFramework: Swarm modules included and using'd successfully."
+catch e
+    @error "JuliaOSFramework: Critical error including Swarm modules." exception=(e, catch_backtrace())
+end
 
 # --- Include Core Blockchain Modules ---
 # try
