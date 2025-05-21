@@ -293,10 +293,6 @@ docs/_static/
 docs/_templates/
 docs/_themes/
 
-# Keep docs directory but exclude markdown files
-!/docs/
-/docs/**/*.md
-
 # Ignore all other .md files, except root README.md and Python wrapper README.md
 **/*.md
 !/README.md
