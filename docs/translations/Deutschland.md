@@ -5,7 +5,7 @@
 **Substantiv**
 **Ein leistungsstarkes, Community-getriebenes Multi-Chain-Framework für technologische Innovationen in KI und Schwarmintelligenz, angetrieben von Julia.**
 
-![JuliaOS Banner](../banner.png)
+![JuliaOS Banner](../../banner.png)
 
 ## Überblick
 
