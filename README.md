@@ -5,6 +5,9 @@
 **Noun**
 **A powerful multi-chain, community-driven framework for AI and Swarm technological innovation, powered by Julia.**
 
+Translations:
+[🇨🇳 汉语](/docs/translations/汉语.md) | [🇦🇪 اَلْعَرَبِيَّةُ](/docs/translations/اَلْعَرَبِيَّةُ.md) | [🇩🇪 Deutschland](/docs/translations/Deutschland.md)| [🇫🇷 Français](/docs/translations/Français.md) | [🇮🇹 Italiano](/docs/translations/Italiano.md) | [🇪🇸 Español](/docs/translations/Español.md)
+
 ![JuliaOS Banner](./banner.png)
 
 ## Overview
@@ -15,13 +18,13 @@ JuliaOS is a comprehensive framework for building decentralized applications (DA
 
 - 📖 [Overview](https://juliaos.gitbook.io/juliaos-documentation-hub): Project overview and vision
 - 🤝 [Partners](https://juliaos.gitbook.io/juliaos-documentation-hub/partners-and-ecosystems/partners): Partners & Ecosystems
-  
+
 ### Technical
 
 - 🚀 [Getting Started](https://juliaos.gitbook.io/juliaos-documentation-hub/technical/getting-started): Quick start guide
 - 🏗️ [Architecture](https://juliaos.gitbook.io/juliaos-documentation-hub/technical/architecture): Architecture overview
 - 🧑‍💻 [Developer Hub](https://juliaos.gitbook.io/juliaos-documentation-hub/developer-hub): For the developer
-    
+
 ### Features
 
 - 🌟 [Core Features & Concepts](https://juliaos.gitbook.io/juliaos-documentation-hub/features/core-features-and-concepts): Important features and fundamentals
@@ -100,21 +103,21 @@ JuliaOS is built as a modular, multi-layered system for cross-chain, agent-based
 **Key Layers:**
 
 - **User Logic & SDKs**
-  - **TypeScript SDK & Logic Layer:**  
+  - **TypeScript SDK & Logic Layer:**
     - Location: `packages/core/`, `packages/templates/agents/`
     - Users write agent and swarm logic in TypeScript, using the SDK to interact with the Julia backend.
-  - **Python Wrapper/SDK & Logic Layer:**  
+  - **Python Wrapper/SDK & Logic Layer:**
     - Location: `packages/pythonWrapper/`, `packages/templates/python_templates/`
     - Users write agent and orchestration logic in Python, using the wrapper to interact with JuliaOS.
 
 - **JuliaOS Backend**
-  - **Layer 1: Julia Core Engine (Foundation Layer):**  
+  - **Layer 1: Julia Core Engine (Foundation Layer):**
     - Location: `julia/src/`
     - Implements core backend logic: agent orchestration, swarm algorithms, neural networks, portfolio optimization, blockchain/DEX integration, price feeds, storage, and trading strategies.
-  - **Layer 2: Julia API Layer (Interface Layer, MCP-Enabled):**  
+  - **Layer 2: Julia API Layer (Interface Layer, MCP-Enabled):**
     - Location: `julia/src/api/`
     - Exposes all backend functionality via API endpoints (REST/gRPC/MCP), validates and dispatches requests, formats responses, and enforces API-level security.
-  - **Layer 3: Rust Security Component (Specialized Security Layer):**  
+  - **Layer 3: Rust Security Component (Specialized Security Layer):**
     - Location: `packages/rust_signer/`
     - Handles all cryptographic operations (private key management, transaction signing, HD wallet derivation) in a secure, memory-safe environment, called via FFI from Julia.
 
