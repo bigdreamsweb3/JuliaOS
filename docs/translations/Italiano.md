@@ -5,7 +5,7 @@
 **Sostantivo**
 **Un potente framework multi-chain, guidato dalla comunità, per l'innovazione tecnologica nell'IA e negli Swarm, alimentato da Julia.**
 
-![JuliaOS Banner](./banner.png)
+![JuliaOS Banner](../../banner.png)
 
 ## Panoramica
 

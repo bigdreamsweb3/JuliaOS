@@ -5,7 +5,7 @@
 **Sustantivo**
 **Un potente framework multicadena, impulsado por la comunidad, para la innovación tecnológica en IA y Enjambres, potenciado por Julia.**
 
-![JuliaOS Banner](./banner.png)
+![JuliaOS Banner](../../banner.png)
 
 ## Descripción General
 

@@ -5,7 +5,7 @@
 **Nom**
 **Un framework multi-chaînes puissant, axé sur la communauté, pour l'innovation technologique en IA et Essaim, propulsé par Julia.**
 
-![JuliaOS Banner](./banner.png)
+![JuliaOS Banner](../../banner.png)
 
 ## Aperçu
 
