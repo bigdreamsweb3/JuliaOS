@@ -5,6 +5,9 @@
 **Noun**
 **A powerful multi-chain, community-driven framework for AI and Swarm technological innovation, powered by Julia.**
 
+Translations:
+[🇨🇳 汉语](/docs/translations/汉语.md) | [🇦🇪 اَلْعَرَبِيَّةُ](/docs/translations/اَلْعَرَبِيَّةُ.md) | [🇩🇪 Deutschland](/docs/translations/Deutschland.md)| [🇫🇷 Français](/docs/translations/Français.md) | [🇮🇹 Italiano](/docs/translations/Italiano.md) | [🇪🇸 Español](/docs/translations/Español.md)
+
 ![JuliaOS Banner](./banner.png)
 
 ## Overview
