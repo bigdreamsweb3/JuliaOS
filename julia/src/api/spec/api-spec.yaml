@@ -84,7 +84,7 @@ paths:
         '404':
           description: Agent not found
 
-  agents/{agent_id}/webhook:
+  /agents/{agent_id}/webhook:
     post:
       operationId: processAgentWebhook
       summary: Trigger event-based agents and provide data to them
