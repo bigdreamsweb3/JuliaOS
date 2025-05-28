@@ -26,6 +26,30 @@ function ping(::HTTP.Request)
     return HTTP.Response(200, "")
 end
 
+function update_agent(req::HTTP.Request, agent_id::String, update::AgentUpdate)
+    @info "Triggered endpoint: PUT /agents/$(agent_id)"
+    @info "NYI, not actually updating agent $(agent_id)..."
+    return nothing
+end
+
+function delete_agent(req::HTTP.Request, agent_id::String)
+    @info "Triggered endpoint: DELETE /agents/$(agent_id)"
+    @info "NYI, not actually deleting agent $(agent_id)..."
+    return nothing
+end
+
+function process_agent_webhook(req::HTTP.Request, agent_id::String, payload::Dict{String, Any})
+    @info "Triggered endpoint: POST /agents/$(agent_id)/webhook"
+    @info "NYI, not actually processing webhook for agent $(agent_id)..."
+    return nothing
+end
+
+function get_agent_output(req::HTTP.Request, agent_id::String)
+    @info "Triggered endpoint: GET /agents/$(agent_id)/output"
+    @info "NYI, not actually getting agent $(agent_id) output..."
+    return Dict{String, Any}()
+end
+
 function run_server(port=8052)
     try
         router = HTTP.Router()

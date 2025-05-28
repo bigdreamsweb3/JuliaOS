@@ -2,3 +2,4 @@
 # Do not modify this file directly. Modify the OpenAPI specification instead.
 
 include("models/model_Agent.jl")
+include("models/model_AgentUpdate.jl")
