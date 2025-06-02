@@ -10,8 +10,8 @@ if [ ! -f "$JARNAME" ]; then
 fi
 
 java -jar $JARNAME generate \
-    -i ./julia/src/api/spec/api-spec.yaml \
+    -i ./backend/src/api/spec/api-spec.yaml \
     -g julia-server \
-    -o ./julia/src/api/server \
+    -o ./backend/src/api/server \
     --additional-properties=packageName=JuliaOSServer \
     --additional-properties=exportModels=true
