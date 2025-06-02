@@ -6,7 +6,7 @@ Base.@kwdef struct StrategyExampleAdderConfig <: StrategyConfig
     times_to_add::Int
 end
 
-function strategy_example_adder(cfg::StrategyExampleAdderConfig, ctx::AgentContext, input::Any) # TODO: input needs to be more generic
+function strategy_example_adder(cfg::StrategyExampleAdderConfig, ctx::AgentContext, input::Any)
     if !isa(input, Int)
         push!(ctx.logs, "ERROR: Input must be an integer.")
         return
