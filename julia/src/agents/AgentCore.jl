@@ -204,29 +204,32 @@ Holds the lifecycle info and outcome of a single agent task.
 # Fields
 - `task_id::String`               – unique identifier for this task  
 - `status::TaskStatus`            – current lifecycle status  
-- `submitted::DateTime`           – when the task was enqueued  
+- `submitted_time::DateTime`           – when the task was enqueued  
 - `start_time::Union{DateTime,Nothing}`    – when execution began (nothing if never started)
 - `end_time::Union{DateTime,Nothing}`   – when execution ended (nothing if still pending/running)
+- `input_task::Dict{String, Any}`: Input task data
 - `output_result::Any`                   – the returned value on success (or partial output)
 - `error_details::Union{String,Nothing}`  – error message if the task failed, else `nothing`
 """
 mutable struct TaskResult
     task_id::String
     status::TaskStatus
-    submitted::DateTime
+    submitted_time::DateTime
     start_time::Union{DateTime, Nothing}
     end_time::Union{DateTime, Nothing}
+    input_task::Dict{String, Any}
     output_result::Any
     error_details::Union{Exception, Nothing}
 
     function TaskResult(task_id::String; 
                         status::TaskStatus=TASK_PENDING,
-                        submitted::DateTime=now(),
+                        submitted_time::DateTime=now(),
                         start_time::Union{DateTime,Nothing}=nothing,
                         end_time::Union{DateTime,Nothing}=nothing,
+                        input_task::Dict{String,Any}=Dict{String,Any}(),
                         output_result::Any=nothing,
                         error_details::Union{Exception,Nothing}=nothing)
-        new(task_id, status, submitted, start_time, end_time, output_result, error_details)
+        new(task_id, status, submitted_time, start_time, end_time, input_task, output_result, error_details)
     end
 end
 
@@ -250,7 +253,7 @@ Represents an autonomous agent instance.
 - `task_history::Vector{Dict{String,Any}}`: History of completed tasks (capped)
 - `skills::Dict{String,SkillState}`: State of registered skills
 - `queue::AbstractAgentQueue`: Agent task queue implementation (NEW: Abstract Type)
-- `task_results::Dict{String, TaskResult}`: Dictionary to track submitted tasks by ID (NEW)
+- `task_results::Dict{String, TaskResult}`: Dictionary to track submitted_time tasks by ID (NEW)
 - `llm_integration::Union{AbstractLLMIntegration, Nothing}`: LLM integration instance (NEW: Abstract Type)
 - `swarm_connection::Any`: Swarm connection object (type depends on backend) (Moved from Swarm module concept)
 - `lock::ReentrantLock`: Lock for protecting mutable agent state (NEW)

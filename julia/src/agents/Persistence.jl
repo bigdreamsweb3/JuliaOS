@@ -85,7 +85,7 @@ function _save_state()
                  serialized_task_results[task_id] = Dict(
                      "task_id" => tr.task_id,
                      "status" => Int(tr.status), # Save enum as Int
-                     "submitted" => string(tr.submitted), # Use UTC if not already
+                     "submitted_time" => string(tr.submitted_time), # Use UTC if not already
                      "start_time" => isnothing(tr.start_time) ? nothing : string(tr.start_time),
                      "end_time" => isnothing(tr.end_time) ? nothing : string(tr.end_time),
                     #  "input_task" => tr.input_task,
