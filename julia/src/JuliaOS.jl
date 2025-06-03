@@ -2,7 +2,7 @@ module JuliaOS
 
 # Export public modules and functions
 export initialize, initialize_framework # Removed initialize_cli
-export API, Storage, Swarms, SwarmBase, Types, CommandHandler, Agents # Assuming these are intended exports
+export API, Storage, Swarms, SwarmBase, Types, CommandHandler, Agents, Trading # Added Trading
 
 # Constants for feature detection
 const PYTHON_WRAPPER_EXISTS = isfile(joinpath(@__DIR__, "python/python_bridge.jl"))

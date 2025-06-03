@@ -33,7 +33,8 @@ using ..AgentCore: Agent, AgentConfig, AgentStatus,
         AGENTS, AGENT_THREADS, ABILITY_REGISTRY, AGENTS_LOCK,
         TaskStatus, TaskResult,
         TASK_PENDING, TASK_RUNNING, TASK_COMPLETED, TASK_FAILED, TASK_CANCELLED, TASK_UNKNOWN,
-        OrderedDictAgentMemory, PriorityAgentQueue
+        OrderedDictAgentMemory, PriorityAgentQueue,
+        set_value!,get_value,clear! # 添加 set_value! 的导入
 using ..Persistence
 using ..AgentMetrics
 # using ..AgentMonitor
@@ -387,7 +388,7 @@ function deleteAgent(id::String)::Bool
 end
 
 """
-    cloneAgent(id::String, new_name::String; parameter_overrides::Dict{String, Any}=Dict())
+    cloneAgent(id::String, new_name::String; parameter_overrides::Dict{String, Any}=Dict{String, Any}())
 
 Creates a new agent by cloning the configuration of an existing agent.
 
@@ -399,7 +400,7 @@ Creates a new agent by cloning the configuration of an existing agent.
 # Returns
 - The newly created Agent instance or nothing if the source agent is not found.
 """
-function cloneAgent(id::String, new_name::String; parameter_overrides::Dict{String, Any}=Dict())
+function cloneAgent(id::String, new_name::String; parameter_overrides::Dict{String, Any}=Dict{String, Any}())
     # Basic input validation
     if !isa(id, AbstractString) || isempty(id)
         @warn "cloneAgent received invalid or empty source ID." id
@@ -413,7 +414,6 @@ function cloneAgent(id::String, new_name::String; parameter_overrides::Dict{Stri
          @warn "cloneAgent received invalid parameter_overrides payload. Expected Dict." parameter_overrides
          return nothing
      end
-
 
     source_agent = getAgent(id) # Uses global lock internally
     source_agent === nothing && (@warn "cloneAgent: Source agent $id not found"; return nothing)
@@ -1123,7 +1123,7 @@ function executeAgentTask(id::String, task::Dict{String,Any})::Dict{String, Any}
     # Create the initial TaskResult
     task_result = TaskResult(task_id;
                          status=TASK_PENDING,
-                         submitted=submitted_time,
+                         submitted_time=submitted_time,
                          start_time=nothing,
                          end_time=nothing,
                          output_result=nothing,
@@ -1346,7 +1346,7 @@ end
 """
     listAgentTasks(id::String; status_filter::Union{TaskStatus, Nothing}=nothing, limit::Int=100)::Dict{String, Any}
 
-Lists tasks submitted to an agent, optionally filtered by status and limited by count.
+Lists tasks submitted_time to an agent, optionally filtered by status and limited by count.
 Returns the most recent tasks first.
 
 # Arguments
@@ -1378,7 +1378,7 @@ function listAgentTasks(id::String; status_filter::Union{TaskStatus, Nothing}=no
 
     lock(ag.lock) do # Acquire agent-specific lock
         tasks = collect(values(ag.task_results)) # Get all task results
-        # Sort by submitted time, most recent first
+        # Sort by submitted_time time, most recent first
         sort!(tasks, by = t -> t.submitted_time, rev=true)
 
         # Apply status filter
@@ -1491,7 +1491,7 @@ function getAgentMemory(id::String, key::String)
 
     # Acquire agent-specific lock for memory access
     lock(ag.lock) do
-        # Use the interface method
+        # Use the interface method from AgentCore
         val = get_value(ag.memory, key)
         if val !== nothing # get_value should handle LRU touch internally
              ag.last_activity = now() # Update activity on memory access
@@ -1563,7 +1563,7 @@ function clearAgentMemory(id::String)::Bool
     ag === nothing && return false
 
     lock(ag.lock) do # Acquire agent-specific lock for memory modification
-        # Use the interface method
+        # Use the interface method from AgentCore
         if length(ag.memory) > 0 # Check length using interface
             clear!(ag.memory) # Clear using interface
             ag.last_activity = now() # Update activity on memory clear
