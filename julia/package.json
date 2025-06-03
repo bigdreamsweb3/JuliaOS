@@ -5,10 +5,12 @@
   "main": "apps/cli.jl",
   "scripts": {
     "start": "julia apps/cli.jl",
+    "server": "julia --project=. src/server.jl",
     "test": "julia --project=. test/runtests.jl",
     "test:all": "julia --project=. test/runtests.jl",
     "test:file": "julia --project=. -e \"include(ARGS[1])\"",
-    "build": "julia --project=build build/build.jl"
+    "build": "julia --project=build build/build.jl",
+    "addjl": "julia --project=. -e \"using Pkg; Pkg.add(ARGS[1])\""
   },
   "dependencies": {
     "ArgParse": "0.6.2",
