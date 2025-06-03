@@ -110,7 +110,6 @@ function start_server(; default_host::String="0.0.0.0", default_port::Int=8000) 
 
     try
         Oxygen.serveparallel(; host=api_host, port=api_port, async=false, middleware=server_middleware)
-        
         @info "API server stopped."
     catch e
         @error "API server failed to start or crashed." exception=(e, catch_backtrace())
