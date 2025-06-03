@@ -1,11 +1,12 @@
 # JuliaOS Configuration Example
 # Copy this file to config.toml and update with your own values
 
-# Server configuration
-[server]
-host = "localhost"
+# API configuration
+[api]
+host = "0.0.0.0"
 port = 8052
 workers = 4
+log_level = "info"
 
 # Storage configuration
 [storage]
@@ -47,8 +48,9 @@ api_keys = ["your-secure-api-key-1", "your-secure-api-key-2"]
 
 # Bridge configuration
 [bridge]
-port = 8053
+port = 8052
 host = "localhost"
+bridge_api_url = "http://localhost:3001/api/v1"
 
 # Wormhole bridge configuration
 [wormhole]

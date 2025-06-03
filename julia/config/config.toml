@@ -7,8 +7,10 @@ log_level = "info"          # debug, info, warn, error
 version = "0.1.0"
 
 [api]
-host = "127.0.0.1"
+host = "0.0.0.0"
 port = 8052
+workers = 4
+log_level = "info"
 cors_enabled = true
 allowed_origins = ["*"]
 rate_limit = 100           # requests per minute
@@ -19,17 +21,26 @@ enabled = true
 port = 8053
 heartbeat_interval = 30    # seconds
 
+# Security configuration
 [security]
-enable_ssl = true
-ssl_cert = "config/ssl/cert.pem"
-ssl_key = "config/ssl/key.pem"
-jwt_secret = "your-jwt-secret"
-jwt_expiry = 86400        # 24 hours in seconds
+rate_limit = 100  # requests per minute
+max_request_size = 1048576  # 1MB
+enable_authentication = false
+# Add a list of valid API keys. Clients must provide one of these in the X-API-Key header.
+# It is strongly recommended to change these default keys and use secure, randomly generated keys.
+api_keys = ["default-secret-key-please-change"]
 
 [storage]
 type = "local"            # local, arweave, web3
 path = "data/storage"
 max_file_size = 10485760  # 10MB in bytes
+local_db_path = "~/.juliaos/juliaos.sqlite"
+arweave_wallet_file = ""
+arweave_gateway = "arweave.net"
+arweave_port = 443
+arweave_protocol = "https"
+arweave_timeout = 20000
+arweave_logging = false
 
 [storage.arweave]
 host = "arweave.net"
@@ -63,7 +74,13 @@ type = "memory"          # memory, redis
 max_size = 10000        # entries
 
 [blockchain]
-default_network = "ethereum"
+default_chain = "ethereum"
+rpc_urls.ethereum = "https://mainnet.infura.io/v3/YOUR_API_KEY"
+rpc_urls.polygon = "https://polygon-rpc.com"
+rpc_urls.solana = "https://api.mainnet-beta.solana.com"
+max_gas_price = 100.0
+max_slippage = 0.01
+supported_chains = ["ethereum", "polygon", "solana"]
 gas_limit = 300000
 gas_price_strategy = "medium"  # low, medium, high
 
@@ -109,4 +126,32 @@ trace_sample_rate = 0.1   # 10% of requests
 [development]
 hot_reload = true
 debug_logging = true
-profile_endpoints = false 
+profile_endpoints = false
+
+[swarm]
+default_algorithm = "DE"
+default_population_size = 50
+max_iterations = 1000
+parallel_evaluation = true
+
+[bridge]
+port = 8052
+host = "localhost"
+bridge_api_url = "http://localhost:3001/api/v1"
+
+[wormhole]
+enabled = true
+network = "testnet"
+
+[wormhole.networks.ethereum]
+rpcUrl = "https://goerli.infura.io/v3/your-infura-key"
+enabled = true
+
+[wormhole.networks.solana]
+rpcUrl = "https://api.devnet.solana.com"
+enabled = true
+
+[logging]
+level = "info"
+format = "json"
+retention_days = 7 
