@@ -5,46 +5,73 @@ using HTTP
 include("server/src/JuliaOSServer.jl")
 
 using .JuliaOSServer
+using ..Agents: Agents, Triggers
 
 const server = Ref{Any}(nothing)
-const agents = Vector{Agent}()
-
-function create_agent(req::HTTP.Request, agent::Agent)
-    @info "Triggered endpoint: POST /agents"
-    @info "NYI, not actually creating agent $(agent.id)..."
-    return nothing
-end
-
-function list_agents(req::HTTP.Request)
-    @info "Triggered endpoint: GET /agents"
-    @info "NYI, not actually listing agents..."
-    return agents
-end
 
 function ping(::HTTP.Request)
     @info "Triggered endpoint: GET /ping"
     return HTTP.Response(200, "")
 end
 
-function update_agent(req::HTTP.Request, agent_id::String, update::AgentUpdate)
-    @info "Triggered endpoint: PUT /agents/$(agent_id)"
-    @info "NYI, not actually updating agent $(agent_id)..."
-    return nothing
+function create_agent(req::HTTP.Request, create_agent_request::CreateAgentRequest;)::AgentSummary
+    @info "Triggered endpoint: POST /agents"
+
+    id = create_agent_request.id
+    received_blueprint = create_agent_request.blueprint
+
+    tools = Vector{Agents.ToolBlueprint}()
+    for tool in received_blueprint.tools
+        push!(tools, Agents.ToolBlueprint(tool.name, tool.config))
+    end
+
+    trigger_type = Triggers.trigger_name_to_enum(received_blueprint.trigger.type)
+    trigger_params = Triggers.process_trigger_params(trigger_type, received_blueprint.trigger.params)
+
+    internal_blueprint = Agents.AgentBlueprint(
+        tools,
+        Agents.StrategyBlueprint(received_blueprint.strategy.name, received_blueprint.strategy.config),
+        Agents.CommonTypes.TriggerConfig(trigger_type, trigger_params)
+    )
+
+    agent = Agents.create_agent(id, internal_blueprint)
+    @info "Created agent: $(agent.id) with state: $(agent.state)"
+    return AgentSummary(agent.id, Agents.agent_state_to_string(agent.state))
 end
 
-function delete_agent(req::HTTP.Request, agent_id::String)
+function delete_agent(req::HTTP.Request, agent_id::String;)::Nothing
     @info "Triggered endpoint: DELETE /agents/$(agent_id)"
-    @info "NYI, not actually deleting agent $(agent_id)..."
+    Agents.delete_agent(agent_id)
+    @info "Deleted agent $(agent_id)"
     return nothing
 end
 
-function process_agent_webhook(req::HTTP.Request, agent_id::String, payload::Dict{String, Any})
+function update_agent(req::HTTP.Request, agent_id::String, agent_update::AgentUpdate;)::AgentSummary
+    @info "Triggered endpoint: PUT /agents/$(agent_id)"
+    agent = get(Agents.AGENTS, agent_id) do
+        error("Agent $(agent_id) does not exist!")
+    end
+    new_state = Agents.string_to_agent_state(agent_update.state)
+    Agents.set_agent_state(agent, new_state)
+    return AgentSummary(agent.id, Agents.agent_state_to_string(agent.state))
+end
+
+function list_agents(req::HTTP.Request;)::Vector{AgentSummary}
+    @info "Triggered endpoint: GET /agents"
+    agents = Vector{AgentSummary}()
+    for (id, agent) in Agents.AGENTS
+        push!(agents, AgentSummary(id, Agents.agent_state_to_string(agent.state)))
+    end
+    return agents
+end
+
+function process_agent_webhook(req::HTTP.Request, agent_id::String, request_body::Dict{String, Any};)::Nothing
     @info "Triggered endpoint: POST /agents/$(agent_id)/webhook"
-    @info "NYI, not actually processing webhook for agent $(agent_id)..."
+    @info "NYI, not actually processing webhook for agent $(agent_id)... received: $(request_body)"
     return nothing
 end
 
-function get_agent_output(req::HTTP.Request, agent_id::String)
+function get_agent_output(req::HTTP.Request, agent_id::String;)::Dict{String, Any}
     @info "Triggered endpoint: GET /agents/$(agent_id)/output"
     @info "NYI, not actually getting agent $(agent_id) output..."
     return Dict{String, Any}()

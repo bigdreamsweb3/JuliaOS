@@ -5,7 +5,7 @@
 function create_agent_read(handler)
     function create_agent_read_handler(req::HTTP.Request)
         openapi_params = Dict{String,Any}()
-        openapi_params["Agent"] = OpenAPI.Servers.to_param_type(Agent, String(req.body))
+        openapi_params["CreateAgentRequest"] = OpenAPI.Servers.to_param_type(CreateAgentRequest, String(req.body))
         req.context[:openapi_params] = openapi_params
 
         return handler(req)
@@ -23,7 +23,7 @@ end
 function create_agent_invoke(impl; post_invoke=nothing)
     function create_agent_invoke_handler(req::HTTP.Request)
         openapi_params = req.context[:openapi_params]
-        ret = impl.create_agent(req::HTTP.Request, openapi_params["Agent"];)
+        ret = impl.create_agent(req::HTTP.Request, openapi_params["CreateAgentRequest"];)
         resp = OpenAPI.Servers.server_response(ret)
         return (post_invoke === nothing) ? resp : post_invoke(req, resp)
     end

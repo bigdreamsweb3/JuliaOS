@@ -21,7 +21,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Agent'
+                  $ref: '#/components/schemas/AgentSummary'
     post:
       operationId: createAgent
       summary: Create a new agent
@@ -31,14 +31,23 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Agent'
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: Unique identifier for the agent
+                blueprint:
+                  $ref: '#/components/schemas/AgentBlueprint'
+              required:
+                - id
+                - blueprint
       responses:
         '201':
           description: Agent created successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentSummary'
   
   /agents/{agent_id}:
     put:
@@ -64,7 +73,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentSummary'
         '404':
           description: Agent not found
     delete:
@@ -137,16 +146,12 @@ paths:
 
 components:
   schemas:
-    Agent:
+    AgentSummary:
       type: object
       properties:
         id:
           type: string
           example: "agent123"
-        name:
-          type: string
-          example: "TradingAgent"
-          description: A human-readable name for the agent that describes its role
         state:
           type: string
           enum: ["CREATED", "RUNNING", "PAUSED", "STOPPED"]
@@ -156,7 +161,25 @@ components:
         - id
         - name
         - state  
-      
+
+    AgentBlueprint:
+      type: object
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolBlueprint'
+          description: List of tools the agent can use
+        strategy:
+          $ref: '#/components/schemas/StrategyBlueprint'
+          description: The strategy to guide the agent
+        trigger:
+          $ref: '#/components/schemas/TriggerConfig'
+          description: Configuration for event-based triggering of the agent
+      required:
+        - tools
+        - strategy
+        - trigger
 
     AgentUpdate:
       type: object
@@ -167,3 +190,42 @@ components:
           example: "PAUSED"
       required:
         - state
+
+    ToolBlueprint:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Name of the tool as registered in the system
+        config:
+          type: object
+          additionalProperties: true
+      required:
+        - name
+        - config
+
+    StrategyBlueprint:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Name of the strategy as registered in the system
+        config:
+          type: object
+          additionalProperties: true
+      required:
+        - name
+        - config
+    
+    TriggerConfig:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: ["webhook"]
+        params:
+          type: object
+          additionalProperties: true
+      required:
+        - type
+        - params

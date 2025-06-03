@@ -9,7 +9,7 @@ The following server methods must be implemented:
 
 - **create_agent**
     - *invocation:* POST /agents
-    - *signature:* create_agent(req::HTTP.Request, agent::Agent;) -> Agent
+    - *signature:* create_agent(req::HTTP.Request, create_agent_request::CreateAgentRequest;) -> AgentSummary
 - **delete_agent**
     - *invocation:* DELETE /agents/{agent_id}
     - *signature:* delete_agent(req::HTTP.Request, agent_id::String;) -> Nothing
@@ -18,13 +18,13 @@ The following server methods must be implemented:
     - *signature:* get_agent_output(req::HTTP.Request, agent_id::String;) -> Dict{String, Any}
 - **list_agents**
     - *invocation:* GET /agents
-    - *signature:* list_agents(req::HTTP.Request;) -> Vector{Agent}
+    - *signature:* list_agents(req::HTTP.Request;) -> Vector{AgentSummary}
 - **process_agent_webhook**
     - *invocation:* POST /agents/{agent_id}/webhook
     - *signature:* process_agent_webhook(req::HTTP.Request, agent_id::String, request_body::Dict{String, Any};) -> Nothing
 - **update_agent**
     - *invocation:* PUT /agents/{agent_id}
-    - *signature:* update_agent(req::HTTP.Request, agent_id::String, agent_update::AgentUpdate;) -> Agent
+    - *signature:* update_agent(req::HTTP.Request, agent_id::String, agent_update::AgentUpdate;) -> AgentSummary
 """
 module JuliaOSServer
 
@@ -67,7 +67,12 @@ function register(router::HTTP.Router, impl; path_prefix::String="", optional_mi
 end
 
 # export models
-export Agent
+export AgentBlueprint
+export AgentSummary
 export AgentUpdate
+export CreateAgentRequest
+export StrategyBlueprint
+export ToolBlueprint
+export TriggerConfig
 
 end # module JuliaOSServer
