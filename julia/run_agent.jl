@@ -55,6 +55,29 @@ function main()
     # stop agent
     is_stopped = JuliaOS.JuliaOSFramework.Agents.stopAgent(agent.id)
     @info "Agent $(agent.id) stopped successfully"
+
+    #----------------------------------------------------------------------------------------------------------#
+    println()
+    println("#"^106)
+    println()
+
+    # create swarm
+    objective_function = JuliaOS.JuliaOSFramework.Swarms.Swarms.get_objective_function_by_name("default_sum_objective")
+    problem_def = JuliaOS.JuliaOSFramework.SwarmBase.OptimizationProblem(0, Vector{Tuple{Float64, Float64}}(), objective_function; is_minimization=true)
+    config = JuliaOS.JuliaOSFramework.Swarms.SwarmConfig("TestSwarm", "PSO", problem_def; # Pass problem_def as positional argument
+                                algorithm_params=Dict{String,Any}(),
+                                objective_desc="Default Objective",
+                                max_iter=100,
+                                target_fit=nothing)
+    swarm = JuliaOS.JuliaOSFramework.Swarms.createSwarm(config)
+    @info "Sward $(swarm.id) created successfully"
+
+    is_added = JuliaOS.JuliaOSFramework.Swarms.addAgentToSwarm(swarm.id, agent.id)
+    @show is_added
+
+    is_started = JuliaOS.JuliaOSFramework.Swarms.startSwarm(swarm.id)
+
+    is_stopped = JuliaOS.JuliaOSFramework.Swarms.stopSwarm(swarm.id)
 end
 
 # Create and run a PlanAndExecute agent

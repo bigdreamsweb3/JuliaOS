@@ -202,4 +202,47 @@ struct OptimizationResult
     end
 end
 
+function initialize!(algo::AbstractSwarmAlgorithm, args...)
+    throw(MethodError(:initialize!, (algo, args...)))
+end
+
+function step!(algo::AbstractSwarmAlgorithm, args...)
+    throw(MethodError(:step!, (algo, args...)))
+end
+
+function should_terminate(algo::AbstractSwarmAlgorithm, args...)
+    throw(MethodError(:should_terminate, (algo, args...)))
+end
+
+"""
+    get_all_particle_positions(algorithm::AbstractSwarmAlgorithm) -> Vector{Vector{Float64}}
+
+Returns all current positions that need evaluation for a given algorithm.
+Must be implemented by concrete algorithm types.
+"""
+function get_all_particle_positions(algorithm::AbstractSwarmAlgorithm)
+    error("get_all_particle_positions not implemented for $(typeof(algorithm))")
+end
+
+"""
+    update_fitness_and_bests!(algorithm::AbstractSwarmAlgorithm, problem::OptimizationProblem, evaluated_fitnesses::Vector{Float64})
+
+Updates internal fitness values and best solution(s) after evaluation of candidate positions.
+Must be implemented by concrete algorithm types.
+"""
+function update_fitness_and_bests!(algorithm::AbstractSwarmAlgorithm, problem::OptimizationProblem, evaluated_fitnesses::Vector{Float64})
+    error("update_fitness_and_bests! not implemented for $(typeof(algorithm))")
+end
+
+"""
+    select_next_generation!(algorithm::AbstractSwarmAlgorithm, problem::OptimizationProblem, trial_vectors::Vector{Vector{Float64}}, trial_fitnesses::Vector{Float64})
+
+Selects the individuals for the next generation based on trial solutions and their fitness.
+Must be implemented by concrete algorithm types.
+"""
+function select_next_generation!(algorithm::AbstractSwarmAlgorithm, problem::OptimizationProblem, trial_vectors::Vector{Vector{Float64}}, trial_fitnesses::Vector{Float64})
+    error("select_next_generation! not implemented for $(typeof(algorithm))")
+end
+
+
 end # module SwarmBase

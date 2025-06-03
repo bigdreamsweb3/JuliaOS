@@ -9,7 +9,7 @@ using Logging
 # or that types are re-exported by a higher-level module.
 # For direct relative import if SwarmBase is in `julia/src/swarm/`
 try
-    using ...swarm.SwarmBase # Relative path from algorithms/ to swarm/
+    using ..SwarmBase # Relative path from algorithms/ to swarm/
     # Or if SwarmBase is directly in src: using ..SwarmBase
     # This depends on how Swarms.jl includes SwarmBase.jl
     # Let's assume SwarmBase is accessible via the framework or a common parent.
@@ -44,7 +44,7 @@ catch e
 end
 
 
-export PSOAlgorithm # Export the algorithm type
+export PSOAlgorithm
 
 mutable struct Particle
     position::Vector{Float64}
@@ -69,7 +69,17 @@ mutable struct PSOAlgorithm <: AbstractSwarmAlgorithm
 
     function PSOAlgorithm(; num_particles::Int=30, inertia::Float64=0.7, c1::Float64=1.5, c2::Float64=1.5, vel_clamp_factor::Float64=0.2)
         0.0 < vel_clamp_factor <= 1.0 || error("Velocity clamping factor must be between 0 (exclusive) and 1 (inclusive).")
-        new(num_particles, inertia, c1, c2, [], [], [], Inf, nothing, vel_clamp_factor)
+        return new(
+            num_particles,
+            inertia,
+            c1,
+            c2,
+            Vector{Particle}(),
+            Vector{Float64}(),
+            Inf,
+            nothing,
+            vel_clamp_factor
+        )
     end
 end
 
