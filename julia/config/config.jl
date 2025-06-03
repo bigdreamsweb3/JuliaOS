@@ -9,7 +9,6 @@ const DEFAULT_CONFIG = Dict(
     "api" => Dict(
         "host" => "127.0.0.1",
         "port" => 8052,
-        "workers" => 4,
         "log_level" => "info"
     ),
     "storage" => Dict(

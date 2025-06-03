@@ -5,7 +5,6 @@
 [api]
 host = "0.0.0.0"
 port = 8052
-workers = 4
 log_level = "info"
 
 # Storage configuration

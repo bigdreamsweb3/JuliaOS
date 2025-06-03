@@ -9,7 +9,6 @@ version = "0.1.0"
 [api]
 host = "0.0.0.0"
 port = 8052
-workers = 4
 log_level = "info"
 cors_enabled = true
 allowed_origins = ["*"]
