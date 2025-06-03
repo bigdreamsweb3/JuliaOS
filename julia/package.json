@@ -5,7 +5,9 @@
   "main": "apps/cli.jl",
   "scripts": {
     "start": "julia apps/cli.jl",
-    "test": "julia --project=test test/runtests.jl",
+    "test": "julia --project=. test/runtests.jl",
+    "test:all": "julia --project=. test/runtests.jl",
+    "test:file": "julia --project=. -e \"include(ARGS[1])\"",
     "build": "julia --project=build build/build.jl"
   },
   "dependencies": {
