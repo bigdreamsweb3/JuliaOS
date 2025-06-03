@@ -20,42 +20,58 @@ using ..AgentHandlers
 function register_routes()
     BASE_PATH = "/api/v1"
 
-    # Hello World route
-    @get BASE_PATH * "/hello" function(req)
+    # 创建测试路由组
+    test_router = router(BASE_PATH * "/test", tags=["Test"])
+    
+    # 测试路由
+    @get test_router("/hello") function(req)
         return Dict("message" => "Hello, World!")
     end
 
-    # # ----------------------------------------------------------------------
-    # # Agent Management Routes
-    # # These routes handle the creation, configuration, and overall management of agents.
-    # # ----------------------------------------------------------------------
-    # # --- Agent CRUD (Create, Read, Update, Delete) & Clone ---
-    @post BASE_PATH * "/agents" AgentHandlers.create_agent_handler                           # Create a new agent
-    @get BASE_PATH * "/agents" AgentHandlers.list_agents_handler                            # List all agents (with optional filters)
-    @get BASE_PATH * "/agents/{agent_id}" AgentHandlers.get_agent_status_handler     # Get status and details of a specific agent
-    @put BASE_PATH * "/agents/{agent_id}" AgentHandlers.update_agent_handler         # Update configuration of an existing agent
-    @delete BASE_PATH * "/agents/{agent_id}" AgentHandlers.delete_agent_handler       # Delete an agent
-    @post BASE_PATH * "/agents/{agent_id}/clone" AgentHandlers.clone_agent_handler    # Clone an existing agent
-    @post BASE_PATH * "/agents/bulk-delete" AgentHandlers.bulk_delete_agents_handler      # Delete multiple agents
+    @post test_router("/params/{id}/{name}") function(req, id, name)
+        return Dict("message" => "Received ID: $id, Name: $name")
+    end
+
+    @get test_router("/query") function(req, name::String="Guest", age::Int=18)
+        return Dict("message" => "Hello, $name You are $age years old.")
+    end
+
+    @post test_router("/post") function(req)
+        body = JSON3.read(req.body, Dict)
+        name = get(body, "name", "Guest")
+        return Dict("message" => "Hello, $name")
+    end
+
+    # 创建agent路由组
+    agent_router = router(BASE_PATH * "/agents", tags=["Agent Management"])
+
+    # --- Agent CRUD (Create, Read, Update, Delete) & Clone ---
+    @post agent_router("") AgentHandlers.create_agent_handler                           # Create a new agent
+    @get agent_router("") AgentHandlers.list_agents_handler                            # List all agents (with optional filters)
+    @get agent_router("/{agent_id}") AgentHandlers.get_agent_status_handler     # Get status and details of a specific agent
+    @put agent_router("/{agent_id}") AgentHandlers.update_agent_handler         # Update configuration of an existing agent
+    @delete agent_router("/{agent_id}") AgentHandlers.delete_agent_handler       # Delete an agent
+    @post agent_router("/{agent_id}/clone") AgentHandlers.clone_agent_handler    # Clone an existing agent
+    @post agent_router("/bulk-delete") AgentHandlers.bulk_delete_agents_handler      # Delete multiple agents
 
     # --- Agent Lifecycle Control ---
-    @post BASE_PATH * "/agents/{agent_id}/start" AgentHandlers.start_agent_handler    # Start an agent's execution loop
-    @post BASE_PATH * "/agents/{agent_id}/stop" AgentHandlers.stop_agent_handler     # Stop an agent's execution loop
-    @post BASE_PATH * "/agents/{agent_id}/pause" AgentHandlers.pause_agent_handler    # Pause a running agent
-    @post BASE_PATH * "/agents/{agent_id}/resume" AgentHandlers.resume_agent_handler   # Resume a paused agent
+    @post agent_router("/{agent_id}/start") AgentHandlers.start_agent_handler    # Start an agent's execution loop
+    @post agent_router("/{agent_id}/stop") AgentHandlers.stop_agent_handler     # Stop an agent's execution loop
+    @post agent_router("/{agent_id}/pause") AgentHandlers.pause_agent_handler    # Pause a running agent
+    @post agent_router("/{agent_id}/resume") AgentHandlers.resume_agent_handler   # Resume a paused agent
 
     # --- Agent Task Management ---
-    @post BASE_PATH * "/agents/{agent_id}/tasks" AgentHandlers.execute_agent_task_handler # Submit a new task to an agent
-    @get BASE_PATH * "/agents/{agent_id}/tasks" AgentHandlers.list_agent_tasks_handler    # List tasks for an agent
-    @get BASE_PATH * "/agents/{agent_id}/tasks/{task_id}" AgentHandlers.get_task_status_handler # Get status of a specific task
-    @get BASE_PATH * "/agents/{agent_id}/tasks/{task_id}/result" AgentHandlers.get_task_result_handler # Get result of a completed/failed task
-    @post BASE_PATH * "/agents/{agent_id}/tasks/{task_id}/cancel" AgentHandlers.cancel_task_handler # Attempt to cancel a task
-    @post BASE_PATH * "/agents/{agent_id}/evaluate_fitness" AgentHandlers.evaluate_agent_fitness_handler # Request agent to evaluate fitness for a given solution
+    @post agent_router("/{agent_id}/tasks") AgentHandlers.execute_agent_task_handler # Submit a new task to an agent
+    @get agent_router("/{agent_id}/tasks") AgentHandlers.list_agent_tasks_handler    # List tasks for an agent
+    @get agent_router("/{agent_id}/tasks/{task_id}") AgentHandlers.get_task_status_handler # Get status of a specific task
+    @get agent_router("/{agent_id}/tasks/{task_id}/result") AgentHandlers.get_task_result_handler # Get result of a completed/failed task
+    @post agent_router("/{agent_id}/tasks/{task_id}/cancel") AgentHandlers.cancel_task_handler # Attempt to cancel a task
+    @post agent_router("/{agent_id}/evaluate_fitness") AgentHandlers.evaluate_agent_fitness_handler # Request agent to evaluate fitness for a given solution
 
     # --- Agent Memory Access ---
-    @get BASE_PATH * "/agents/{agent_id}/memory/{key}" AgentHandlers.get_agent_memory_handler # Get a value from agent's memory
-    @post BASE_PATH * "/agents/{agent_id}/memory/{key}" AgentHandlers.set_agent_memory_handler # Set a value in agent's memory
-    @delete BASE_PATH * "/agents/{agent_id}/memory" AgentHandlers.clear_agent_memory_handler   # Clear all memory for an agent
+    @get agent_router("/{agent_id}/memory/{key}") AgentHandlers.get_agent_memory_handler # Get a value from agent's memory
+    @post agent_router("/{agent_id}/memory/{key}") AgentHandlers.set_agent_memory_handler # Set a value in agent's memory
+    @delete agent_router("/{agent_id}/memory") AgentHandlers.clear_agent_memory_handler   # Clear all memory for an agent
 
     # # ----------------------------------------------------------------------
     # # Metrics Routes
