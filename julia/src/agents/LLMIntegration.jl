@@ -15,7 +15,7 @@ using HTTP  # For making direct HTTP calls
 # Import the abstract type from the Agents module
 import ..AgentCore: AbstractLLMIntegration # Relative import for sibling module in parent dir
 
-export chat, get_provider_status # Export the new status function
+export chat, chat_stream, get_provider_status # Export the new status function
 
 # --- Concrete Implementations of AbstractLLMIntegration ---
 struct OpenAILLMIntegration <: AbstractLLMIntegration end
@@ -40,6 +40,24 @@ Generic fallback. Concrete types must implement their own `chat` method.
 function chat(llm::AbstractLLMIntegration, prompt::String; cfg::Dict)
     @warn "Chat method not implemented for LLM integration type $(typeof(llm)). Falling back to echo."
     return "[LLM Integration Error] Echo: " * prompt
+end
+
+"""
+    chat_stream(llm::AbstractLLMIntegration, prompt::String; cfg::Dict)
+
+Generic fallback for streaming chat. Concrete types must implement their own `chat_stream` method.
+Returns a Channel that yields response chunks.
+"""
+function chat_stream(llm::AbstractLLMIntegration, prompt::String; cfg::Dict)
+    @warn "Streaming chat method not implemented for LLM integration type $(typeof(llm)). Falling back to non-streaming chat."
+    return Channel{String}(1) do ch
+        try
+            response = chat(llm, prompt; cfg)
+            put!(ch, response)
+        finally
+            close(ch)
+        end
+    end
 end
 
 # --- OpenAI Implementation using Direct HTTP ---
@@ -74,11 +92,13 @@ function chat(llm::OpenAILLMIntegration, prompt::String; cfg::Dict)
         "temperature" => temperature,
         "max_tokens" => max_tokens_to_sample
     )
-    # Add other OpenAI specific parameters from cfg if needed (e.g., top_p, stream)
-    # if haskey(cfg, "stream") && cfg["stream"] == true
-    #     payload["stream"] = true
-    #     # Note: Handling streaming responses would require different logic below
-    # end
+    
+    # Add support for streaming output
+    if get(cfg, "stream", false)
+        payload["stream"] = true
+        # If streaming output is enabled, return Channel directly
+        return chat_stream(llm, prompt; cfg)
+    end
 
     json_payload = JSON3.write(payload)
     @debug "Sending request to OpenAI" endpoint=chat_endpoint model=model
@@ -111,6 +131,120 @@ function chat(llm::OpenAILLMIntegration, prompt::String; cfg::Dict)
         @error "Exception during OpenAI API call" exception=(e, catch_backtrace())
         return "[LLM ERROR: Exception - $(string(e))]"
     end
+end
+
+"""
+    chat_stream(llm::OpenAILLMIntegration, prompt::String; cfg::Dict)
+
+Streaming chat implementation for OpenAI.
+Returns a Channel that yields response chunks.
+"""
+function chat_stream(llm::OpenAILLMIntegration, prompt::String; cfg::Dict)
+    api_key = get(ENV, "OPENAI_API_KEY", get(cfg, "api_key", ""))
+    if isempty(api_key)
+        @error "OpenAI API key not found in ENV or agent configuration."
+        return Channel{String}(0) do ch; close(ch); end
+    end
+
+    model = get(cfg, "model", "gpt-4o-mini")
+    temperature = get(cfg, "temperature", 0.7)
+    max_tokens_to_sample = get(cfg, "max_tokens", 1024)
+    system_prompt_content = get(cfg, "system_prompt", "")
+    openai_api_base = get(cfg, "api_base", "https://api.openai.com/v1")
+    chat_endpoint = "$openai_api_base/chat/completions"
+
+    headers = Dict(
+        "Content-Type" => "application/json",
+        "Authorization" => "Bearer $api_key"
+    )
+
+    messages = []
+    if !isempty(system_prompt_content)
+        push!(messages, Dict("role" => "system", "content" => system_prompt_content))
+    end
+    push!(messages, Dict("role" => "user", "content" => prompt))
+
+    payload = Dict(
+        "model" => model,
+        "messages" => messages,
+        "temperature" => temperature,
+        "max_tokens" => max_tokens_to_sample,
+        "stream" => true
+    )
+
+    json_payload = JSON3.write(payload)
+
+    return Channel{String}(10) do ch
+        try
+            HTTP.open("POST", chat_endpoint, headers) do stream
+                write(stream, json_payload)
+                HTTP.closewrite(stream)
+                r = HTTP.startread(stream)
+                isdone = false
+                while !isdone
+                    if eof(stream)
+                        break
+                    end
+                    masterchunk = String(readavailable(stream))
+                    chunks = String.(filter(!isempty, split(masterchunk, "\n")))
+                    for chunk in chunks
+                        if occursin(chunk, "data: [DONE]")
+                            isdone = true
+                            break
+                        end
+                        if startswith(chunk, "data: ")
+                            data = chunk[7:end] # Remove "data: " prefix
+                            if data == "[DONE]"
+                                break
+                            end
+                            try
+                                json_response = JSON3.read(data)
+                                if haskey(json_response, "choices") && !isempty(json_response.choices) &&
+                                   haskey(json_response.choices[1], "delta")
+                                    delta = json_response.choices[1].delta
+                                    if haskey(delta, "content")
+                                        content = delta["content"]
+                                        put!(ch, content)  # Push to Channel
+                                    end
+                                end
+                            catch e
+                                @warn "Error parsing streaming response" error=e
+                            end
+                        end
+                    end
+                end
+                HTTP.closeread(stream)
+            end
+        finally
+            close(ch)
+        end
+    end
+end
+
+# Helper function: process OpenAI streaming response
+function process_openai_stream_response(response_body::String)
+    result = ""
+    for line in eachline(IOBuffer(response_body))
+        if !isempty(line) && startswith(line, "data: ")
+            data = line[7:end] # Remove "data: " prefix
+            if data == "[DONE]"
+                break
+            end
+            try
+                json_response = JSON3.read(data)
+                if haskey(json_response, "choices") && !isempty(json_response.choices) &&
+                   haskey(json_response.choices[1], "delta") && haskey(json_response.choices[1].delta, "content")
+                    content = json_response.choices[1].delta.content
+                    if !isempty(content)
+                        result *= content
+                    end
+                end
+            catch e
+                @warn "Error parsing streaming response" error=e
+            end
+        end
+    end
+    return result
 end
 
 # --- Anthropic (Claude) Implementation using Direct HTTP ---

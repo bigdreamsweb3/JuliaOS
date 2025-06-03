@@ -138,14 +138,15 @@ function _create_queue_component(config::Dict{String, Any})
 end
 
 function _create_llm_component(config::Dict{String, Any})
-    provider = lowercase(get(config, "provider", "none"))
-    if provider == "openai"
-        # For now, we only have DefaultLLMIntegration which wraps LLMIntegration module
-        # If you had other LLM integration concrete types, you'd choose here based on provider
-        return LLMIntegration.OpenAILLMIntegration()
-    else
-        return nothing # No LLM integration needed
+    # logging Config
+    @info "create_llm_component find config: $config"
+    # Add provider if not present
+    if !haskey(config, "provider")
+        config["provider"] = "openai"  # Default to OpenAI if not specified
     end
+    
+    # Create LLM integration with the config
+    return LLMIntegration.create_llm_integration(config)
 end
 
 # Swarm connection logic would ideally be in Swarm.jl, returning an AbstractSwarmBackend
@@ -1110,6 +1111,10 @@ function executeAgentTask(id::String, task::Dict{String,Any})::Dict{String, Any}
     end
 
     ag = getAgent(id) # Uses global lock internally
+    
+    # logging agains
+    @info "executeAgentTask find agent $id" ag
+
     ag === nothing && return Dict("success"=>false, "error"=>"Agent $id not found")
 
     task_id = string(uuid4()) # Generate unique task ID
@@ -1595,6 +1600,7 @@ An ability that sends a prompt to the configured LLM provider.
 Requires LLMIntegration module (or a pluggable LLM implementation).
 """
 function llm_chat_ability(ag::Agent, task::Dict)
+    @info "llm_chat_ability find agent $(ag.id)" ag
     # This ability function needs access to the agent's config, which is immutable.
     # It doesn't modify agent state directly, so no ag.lock acquisition needed here.
     prompt = get(task, "prompt", "Hi!")
@@ -1604,6 +1610,9 @@ function llm_chat_ability(ag::Agent, task::Dict)
          # Return an error result
          return Dict("error" => "Invalid or empty prompt provided.")
     end
+
+    # logging llm_integration
+    @info "llm_chat_ability find llm_integration $(ag.llm_integration) at $(ag.config.llm_config) in agent: $(ag.id)"
 
     if ag.llm_integration === nothing
          @warn "Agent $(ag.id) has no LLM integration configured."
