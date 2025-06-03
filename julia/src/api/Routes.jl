@@ -4,7 +4,7 @@ module Routes # Filename Routes.jl implies module Routes
 using Oxygen
 using HTTP
 # These are sibling modules within the 'api' directory
-# using ..AgentHandlers
+using ..AgentHandlers
 # using ..MetricsHandlers
 # using ..LlmHandlers # Use LlmHandlers as per screenshot and updated file
 # using ..SwarmHandlers # Added SwarmHandlers
@@ -30,32 +30,32 @@ function register_routes()
     # # These routes handle the creation, configuration, and overall management of agents.
     # # ----------------------------------------------------------------------
     # # --- Agent CRUD (Create, Read, Update, Delete) & Clone ---
-    # @post BASE_PATH * "/agents" AgentHandlers.create_agent_handler                           # Create a new agent
-    # @get BASE_PATH * "/agents" AgentHandlers.list_agents_handler                            # List all agents (with optional filters)
-    # @get BASE_PATH * "/agents/{agent_id::String}" AgentHandlers.get_agent_status_handler     # Get status and details of a specific agent
-    # @put BASE_PATH * "/agents/{agent_id::String}" AgentHandlers.update_agent_handler         # Update configuration of an existing agent
-    # @delete BASE_PATH * "/agents/{agent_id::String}" AgentHandlers.delete_agent_handler       # Delete an agent
-    # @post BASE_PATH * "/agents/{agent_id::String}/clone" AgentHandlers.clone_agent_handler    # Clone an existing agent
-    # @post BASE_PATH * "/agents/bulk-delete" AgentHandlers.bulk_delete_agents_handler      # Delete multiple agents
+    @post BASE_PATH * "/agents" AgentHandlers.create_agent_handler                           # Create a new agent
+    @get BASE_PATH * "/agents" AgentHandlers.list_agents_handler                            # List all agents (with optional filters)
+    @get BASE_PATH * "/agents/{agent_id}" AgentHandlers.get_agent_status_handler     # Get status and details of a specific agent
+    @put BASE_PATH * "/agents/{agent_id}" AgentHandlers.update_agent_handler         # Update configuration of an existing agent
+    @delete BASE_PATH * "/agents/{agent_id}" AgentHandlers.delete_agent_handler       # Delete an agent
+    @post BASE_PATH * "/agents/{agent_id}/clone" AgentHandlers.clone_agent_handler    # Clone an existing agent
+    @post BASE_PATH * "/agents/bulk-delete" AgentHandlers.bulk_delete_agents_handler      # Delete multiple agents
 
-    # # --- Agent Lifecycle Control ---
-    # @post BASE_PATH * "/agents/{agent_id::String}/start" AgentHandlers.start_agent_handler    # Start an agent's execution loop
-    # @post BASE_PATH * "/agents/{agent_id::String}/stop" AgentHandlers.stop_agent_handler     # Stop an agent's execution loop
-    # @post BASE_PATH * "/agents/{agent_id::String}/pause" AgentHandlers.pause_agent_handler    # Pause a running agent
-    # @post BASE_PATH * "/agents/{agent_id::String}/resume" AgentHandlers.resume_agent_handler   # Resume a paused agent
+    # --- Agent Lifecycle Control ---
+    @post BASE_PATH * "/agents/{agent_id}/start" AgentHandlers.start_agent_handler    # Start an agent's execution loop
+    @post BASE_PATH * "/agents/{agent_id}/stop" AgentHandlers.stop_agent_handler     # Stop an agent's execution loop
+    @post BASE_PATH * "/agents/{agent_id}/pause" AgentHandlers.pause_agent_handler    # Pause a running agent
+    @post BASE_PATH * "/agents/{agent_id}/resume" AgentHandlers.resume_agent_handler   # Resume a paused agent
 
-    # # --- Agent Task Management ---
-    # @post BASE_PATH * "/agents/{agent_id::String}/tasks" AgentHandlers.execute_agent_task_handler # Submit a new task to an agent
-    # @get BASE_PATH * "/agents/{agent_id::String}/tasks" AgentHandlers.list_agent_tasks_handler    # List tasks for an agent
-    # @get BASE_PATH * "/agents/{agent_id::String}/tasks/{task_id::String}" AgentHandlers.get_task_status_handler # Get status of a specific task
-    # @get BASE_PATH * "/agents/{agent_id::String}/tasks/{task_id::String}/result" AgentHandlers.get_task_result_handler # Get result of a completed/failed task
-    # @post BASE_PATH * "/agents/{agent_id::String}/tasks/{task_id::String}/cancel" AgentHandlers.cancel_task_handler # Attempt to cancel a task
-    # @post BASE_PATH * "/agents/{agent_id::String}/evaluate_fitness" AgentHandlers.evaluate_agent_fitness_handler # Request agent to evaluate fitness for a given solution
+    # --- Agent Task Management ---
+    @post BASE_PATH * "/agents/{agent_id}/tasks" AgentHandlers.execute_agent_task_handler # Submit a new task to an agent
+    @get BASE_PATH * "/agents/{agent_id}/tasks" AgentHandlers.list_agent_tasks_handler    # List tasks for an agent
+    @get BASE_PATH * "/agents/{agent_id}/tasks/{task_id}" AgentHandlers.get_task_status_handler # Get status of a specific task
+    @get BASE_PATH * "/agents/{agent_id}/tasks/{task_id}/result" AgentHandlers.get_task_result_handler # Get result of a completed/failed task
+    @post BASE_PATH * "/agents/{agent_id}/tasks/{task_id}/cancel" AgentHandlers.cancel_task_handler # Attempt to cancel a task
+    @post BASE_PATH * "/agents/{agent_id}/evaluate_fitness" AgentHandlers.evaluate_agent_fitness_handler # Request agent to evaluate fitness for a given solution
 
-    # # --- Agent Memory Access ---
-    # @get BASE_PATH * "/agents/{agent_id::String}/memory/{key::String}" AgentHandlers.get_agent_memory_handler # Get a value from agent's memory
-    # @post BASE_PATH * "/agents/{agent_id::String}/memory/{key::String}" AgentHandlers.set_agent_memory_handler # Set a value in agent's memory
-    # @delete BASE_PATH * "/agents/{agent_id::String}/memory" AgentHandlers.clear_agent_memory_handler   # Clear all memory for an agent
+    # --- Agent Memory Access ---
+    @get BASE_PATH * "/agents/{agent_id}/memory/{key}" AgentHandlers.get_agent_memory_handler # Get a value from agent's memory
+    @post BASE_PATH * "/agents/{agent_id}/memory/{key}" AgentHandlers.set_agent_memory_handler # Set a value in agent's memory
+    @delete BASE_PATH * "/agents/{agent_id}/memory" AgentHandlers.clear_agent_memory_handler   # Clear all memory for an agent
 
     # # ----------------------------------------------------------------------
     # # Metrics Routes
