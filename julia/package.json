@@ -5,7 +5,7 @@
   "main": "apps/cli.jl",
   "scripts": {
     "start": "julia apps/cli.jl",
-    "server": "julia --project=. src/server.jl",
+    "server": "julia --threads 4,1 --project=. src/server.jl",
     "test": "julia --project=. test/runtests.jl",
     "test:all": "julia --project=. test/runtests.jl",
     "test:file": "julia --project=. -e \"include(ARGS[1])\"",
