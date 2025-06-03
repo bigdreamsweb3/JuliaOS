@@ -3,6 +3,9 @@ module Routes # Filename Routes.jl implies module Routes
 
 using Oxygen
 using HTTP
+using JSON3
+using StructTypes
+using Dates  # Add Dates module for timestamp functionality
 # These are sibling modules within the 'api' directory
 using ..AgentHandlers
 # using ..MetricsHandlers
@@ -17,13 +20,30 @@ using ..AgentHandlers
 # Oxygen typically infers path parameters from the function signature.
 # I will use Oxygen's standard way of defining routes with path parameters.
 
+# Define request and response structures
+struct TestRequest
+    name::String
+    age::Int
+    email::Union{String, Nothing}
+end
+
+struct TestResponse
+    message::String
+    received_data::TestRequest
+    timestamp::String
+end
+
+# Add struct type definitions to support JSON serialization
+StructTypes.StructType(::Type{TestRequest}) = StructTypes.Struct()
+StructTypes.StructType(::Type{TestResponse}) = StructTypes.Struct()
+
 function register_routes()
     BASE_PATH = "/api/v1"
 
-    # 创建测试路由组
+    # Create test router group
     test_router = router(BASE_PATH * "/test", tags=["Test"])
     
-    # 测试路由
+    # Test routes
     @get test_router("/hello") function(req)
         return Dict("message" => "Hello, World!")
     end
@@ -37,12 +57,21 @@ function register_routes()
     end
 
     @post test_router("/post") function(req)
-        body = JSON3.read(req.body, Dict)
-        name = get(body, "name", "Guest")
-        return Dict("message" => "Hello, $name")
+        # Deserialize JSON from request body to TestRequest struct
+        request_data = JSON3.read(req.body, TestRequest)
+        
+        # Create response object
+        response = TestResponse(
+            "Hello, $(request_data.name)!",
+            request_data,
+            string(Dates.now())
+        )
+        
+        # Automatically serialize to JSON and return
+        return response
     end
 
-    # 创建agent路由组
+    # Create agent router group
     agent_router = router(BASE_PATH * "/agents", tags=["Agent Management"])
 
     # --- Agent CRUD (Create, Read, Update, Delete) & Clone ---
