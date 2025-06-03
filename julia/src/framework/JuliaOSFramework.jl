@@ -15,6 +15,7 @@ try
     include("../agents/Persistence.jl")
     include("../agents/LLMIntegration.jl")
     include("../agents/Agents.jl")
+    include("../agents/PlanAndExecute.jl")
     # include("../agents/AgentMonitor.jl")
     
     # Make Agent modules available
@@ -24,6 +25,7 @@ try
     using .LLMIntegration
     using .Agents
     using .Persistence
+    using .PlanAndExecute
     @info "JuliaOSFramework: Agent modules included and using'd successfully."
 catch e
     @error "JuliaOSFramework: Critical error including Agent modules." exception=(e, catch_backtrace())

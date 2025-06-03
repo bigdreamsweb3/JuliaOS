@@ -57,6 +57,67 @@ function main()
     @info "Agent $(agent.id) stopped successfully"
 end
 
+# Create and run a PlanAndExecute agent
+function run_plan_execute_example()
+    # First, we need to define some abilities to be used as tools
+    # Here we're using the existing ping and llm_chat abilities, but you could create more specialized ones
+
+    # Create a new agent to use with PlanAndExecute
+    plan_agent_cfg = JuliaOS.JuliaOSFramework.AgentCore.AgentConfig(
+        "PlanExecuteAgent",
+        JuliaOS.JuliaOSFramework.AgentCore.CUSTOM;
+        abilities=["ping", "llm_chat"],
+        parameters=Dict{String, Any}("demo" => true),
+        llm_config=Dict{String, Any}(),
+        memory_config=Dict{String, Any}(),
+        queue_config=Dict{String, Any}(),
+    )
+
+    plan_agent = JuliaOS.JuliaOSFramework.Agents.createAgent(plan_agent_cfg)
+    @info "PlanExecute Agent $(plan_agent.id) created successfully"
+
+    # Start the agent
+    JuliaOS.JuliaOSFramework.Agents.startAgent(plan_agent.id)
+    @info "PlanExecute Agent $(plan_agent.id) started successfully"
+
+    # Define tools for the PlanAndExecute agent
+    tools = [
+        Dict("name" => "Ping",
+             "description" => "Simple ping tool to check if the system is responsive",
+             "ability" => "ping"),
+        Dict("name" => "LLMChat",
+             "description" => "Ask the language model a question and get a response",
+             "ability" => "llm_chat")
+    ]
+
+    # Create a PlanAndExecute agent
+    @info "Creating PlanAndExecute agent"
+    plan_execute_agent = JuliaOS.JuliaOSFramework.PlanAndExecute.create_plan_execute_agent(
+        plan_agent.id,
+        tools,
+        Dict{String, Any}()  # LLM config (using defaults)
+    )
+
+    # Define a task for the agent to solve
+    task = "First check if the system is responsive, then ask the language model what the capital of France is."
+
+    # Run the PlanAndExecute agent
+    @info "Running PlanAndExecute agent with task: $task"
+    result = JuliaOS.JuliaOSFramework.PlanAndExecute.run_plan_execute_agent(plan_execute_agent, task)
+
+    # Display the results
+    @info "PlanAndExecute Execution Complete"
+    @info "Success: $(result["success"])"
+    @info "Steps Completed: $(result["steps_completed"]) / $(result["steps_count"])"
+    @info "Execution Summary:\n$(result["execution_summary"])"
+    @info "Final Answer: $(result["final_answer"])"
+
+    # Stop the agent
+    JuliaOS.JuliaOSFramework.Agents.stopAgent(plan_agent.id)
+    @info "PlanExecute Agent $(plan_agent.id) stopped successfully"
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
-    main()
+    # main()
+    run_plan_execute_example()
 end
