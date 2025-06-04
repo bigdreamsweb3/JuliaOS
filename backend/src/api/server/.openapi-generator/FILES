@@ -4,6 +4,8 @@ docs/AgentSummary.md
 docs/AgentUpdate.md
 docs/CreateAgentRequest.md
 docs/DefaultApi.md
+docs/ProcessAgentWebhookRequest.md
+docs/ProcessAgentWebhookRequestData.md
 docs/StrategyBlueprint.md
 docs/ToolBlueprint.md
 docs/TriggerConfig.md
@@ -14,6 +16,8 @@ src/models/model_AgentBlueprint.jl
 src/models/model_AgentSummary.jl
 src/models/model_AgentUpdate.jl
 src/models/model_CreateAgentRequest.jl
+src/models/model_ProcessAgentWebhookRequest.jl
+src/models/model_ProcessAgentWebhookRequestData.jl
 src/models/model_StrategyBlueprint.jl
 src/models/model_ToolBlueprint.jl
 src/models/model_TriggerConfig.jl

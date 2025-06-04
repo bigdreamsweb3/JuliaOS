@@ -65,10 +65,30 @@ function list_agents(req::HTTP.Request;)::Vector{AgentSummary}
     return agents
 end
 
-function process_agent_webhook(req::HTTP.Request, agent_id::String, request_body::Dict{String, Any};)::Nothing
+function process_agent_webhook(req::HTTP.Request, agent_id::String, process_agent_webhook_request::ProcessAgentWebhookRequest;)::Nothing
     @info "Triggered endpoint: POST /agents/$(agent_id)/webhook"
-    @info "NYI, not actually processing webhook for agent $(agent_id)... received: $(request_body)"
+    agent = get(Agents.AGENTS, agent_id) do
+        error("Agent $(agent_id) does not exist!")
+    end
+    if agent.trigger.type == Agents.CommonTypes.WEBHOOK_TRIGGER
+        @info "Triggering agent $(agent_id) by webhook"
+        if hasproperty(process_agent_webhook_request, Symbol("data"))
+            @info "Passing data to agent $(agent_id) webhook: $(process_agent_webhook_request.data)"
+            Agents.run(agent, process_agent_webhook_request.data)
+        else
+            Agents.run(agent)
+        end
+    end
     return nothing
+end
+
+function get_agent_logs(req::HTTP.Request, agent_id::String;)::Dict{String, Any}
+    @info "Triggered endpoint: GET /agents/$(agent_id)/logs"
+    agent = get(Agents.AGENTS, agent_id) do
+        error("Agent $(agent_id) does not exist!")
+    end
+    # TODO: implement pagination
+    return Dict{String, Any}("logs" => agent.context.logs)
 end
 
 function get_agent_output(req::HTTP.Request, agent_id::String;)::Dict{String, Any}

@@ -13,6 +13,9 @@ The following server methods must be implemented:
 - **delete_agent**
     - *invocation:* DELETE /agents/{agent_id}
     - *signature:* delete_agent(req::HTTP.Request, agent_id::String;) -> Nothing
+- **get_agent_logs**
+    - *invocation:* GET /agents/{agent_id}/logs
+    - *signature:* get_agent_logs(req::HTTP.Request, agent_id::String;) -> Dict{String, Any}
 - **get_agent_output**
     - *invocation:* GET /agents/{agent_id}/output
     - *signature:* get_agent_output(req::HTTP.Request, agent_id::String;) -> Dict{String, Any}
@@ -21,7 +24,7 @@ The following server methods must be implemented:
     - *signature:* list_agents(req::HTTP.Request;) -> Vector{AgentSummary}
 - **process_agent_webhook**
     - *invocation:* POST /agents/{agent_id}/webhook
-    - *signature:* process_agent_webhook(req::HTTP.Request, agent_id::String, request_body::Dict{String, Any};) -> Nothing
+    - *signature:* process_agent_webhook(req::HTTP.Request, agent_id::String, process_agent_webhook_request::ProcessAgentWebhookRequest;) -> Nothing
 - **update_agent**
     - *invocation:* PUT /agents/{agent_id}
     - *signature:* update_agent(req::HTTP.Request, agent_id::String, agent_update::AgentUpdate;) -> AgentSummary
@@ -71,6 +74,8 @@ export AgentBlueprint
 export AgentSummary
 export AgentUpdate
 export CreateAgentRequest
+export ProcessAgentWebhookRequest
+export ProcessAgentWebhookRequestData
 export StrategyBlueprint
 export ToolBlueprint
 export TriggerConfig
