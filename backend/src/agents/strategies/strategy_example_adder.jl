@@ -7,12 +7,12 @@ Base.@kwdef struct StrategyExampleAdderConfig <: StrategyConfig
 end
 
 function strategy_example_adder(cfg::StrategyExampleAdderConfig, ctx::AgentContext, input::Any)
-    if !isa(input, Int)
-        push!(ctx.logs, "ERROR: Input must be an integer.")
+    if !isa(input, Dict) || !haskey(input, "value") || !isa(input["value"], Int)
+        push!(ctx.logs, "ERROR: Input must be a Dict with an integer \"value\" field.")
         return
     end
 
-    value = input
+    value = input["value"]
 
     adder_tool_index = findfirst(tool -> tool.metadata.name == "adder", ctx.tools)
     if adder_tool_index === nothing

@@ -74,7 +74,7 @@ function process_agent_webhook(req::HTTP.Request, agent_id::String, process_agen
         @info "Triggering agent $(agent_id) by webhook"
         if hasproperty(process_agent_webhook_request, Symbol("data"))
             @info "Passing data to agent $(agent_id) webhook: $(process_agent_webhook_request.data)"
-            Agents.run(agent, process_agent_webhook_request.data)
+            Agents.run(agent, process_agent_webhook_request.data.value)
         else
             Agents.run(agent)
         end
