@@ -1,0 +1,23 @@
+{
+	"id": "example-agent",
+	"blueprint": {
+		"tools": [
+			{
+				"name": "adder",
+				"config": {
+					"add_value": 3
+				}
+			}
+		],
+		"strategy": {
+			"name": "adder",
+			"config": {
+				"times_to_add": 5
+			}
+		},
+		"trigger": {
+			"type" : "webhook",
+			"config": {}
+		}
+	}
+}

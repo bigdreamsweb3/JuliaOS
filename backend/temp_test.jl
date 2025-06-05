@@ -45,7 +45,7 @@ function main()
         @info " - $log"
     end
 
-    Agents.run(example_agent, 7)
+    Agents.run(example_agent, Dict("value" => 7))
 
     @info "Agent logs:"
     for log in example_agent.context.logs

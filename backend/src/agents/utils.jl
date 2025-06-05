@@ -1,4 +1,4 @@
-using .CommonTypes: InstantiatedTool, InstantiatedStrategy, StrategyBlueprint, ToolBlueprint
+using .CommonTypes: InstantiatedTool, InstantiatedStrategy, StrategyBlueprint, ToolBlueprint, AgentState
 
 function deserialize_object(object_type::DataType, data::Dict{String, Any})
     expected_fields = fieldnames(object_type)
@@ -42,4 +42,25 @@ function instantiate_strategy(blueprint::StrategyBlueprint)::InstantiatedStrateg
     strategy_config = deserialize_object(strategy_spec.config_type, blueprint.config_data)
 
     return InstantiatedStrategy(strategy_spec.run, strategy_config)
+end
+
+const AGENT_STATE_NAMES = Dict(
+    CommonTypes.CREATED_STATE  => "CREATED",
+    CommonTypes.RUNNING_STATE  => "RUNNING",
+    CommonTypes.PAUSED_STATE   => "PAUSED",
+    CommonTypes.STOPPED_STATE  => "STOPPED",
+)
+
+function agent_state_to_string(state::AgentState)::String
+    return get(AGENT_STATE_NAMES, state) do
+        error("Unknown AgentState: $state")
+    end
+end
+
+const NAME_TO_AGENT_STATE = Dict(v => k for (k, v) in AGENT_STATE_NAMES)
+
+function string_to_agent_state(name::String)::AgentState
+    return get(NAME_TO_AGENT_STATE, name) do
+        error("Invalid AgentState name: $name")
+    end
 end

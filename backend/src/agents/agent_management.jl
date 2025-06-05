@@ -49,6 +49,8 @@ function delete_agent(
         error("Agent with ID '$id' does not exist.")
     end
 
+    # TODO: we currently have no mechanism of checking if the agent strategy is currently executing.
+
     # Remove the agent from the registry
     delete!(AGENTS, id)
 
@@ -59,7 +61,13 @@ function set_agent_state(
     agent::Agent,
     new_state::AgentState,
 )
-    # TODO: actually make sure the transition is valid and realized fully
+    # All transitions are allowed, except transitions to CREATED and transitions from STOPPED:
+    if (agent.state == CommonTypes.STOPPED_STATE)
+        error("Agent with ID '$(agent.id)' is already STOPPED.")
+    elseif (new_state == CommonTypes.CREATED_STATE)
+        error("Agents cannot be explicitly set to CREATED state.")
+    end
+
     agent.state = new_state
 
     return nothing
