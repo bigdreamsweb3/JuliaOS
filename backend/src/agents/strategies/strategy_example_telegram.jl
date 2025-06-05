@@ -9,16 +9,16 @@ end
 function strategy_telegram_moderator(
         cfg::StrategyTelegramModeratorConfig,
         ctx::AgentContext,
-        payload::Dict{String,Dict{String,Any}}
+        input::Dict{String,Any}
     )
-    if !haskey(payload, "message")
-        push!(ctx.logs, "ERROR: Payload missing 'message' field.")
+    if !haskey(input, "message") || !(input["message"] isa Dict{String,Any})
+        push!(ctx.logs, "ERROR: payload missing “message” or it’s not a Dict")
         return ctx
     end
-    msg = payload["message"]
+
+    msg = input["message"]::Dict{String,Any}
     if !(haskey(msg, "chat") && haskey(msg["chat"], "id") &&
-         haskey(msg, "from") && haskey(msg["from"], "id") &&
-         haskey(msg, "text"))
+         haskey(msg["from"], "id") && haskey(msg, "text"))
         push!(ctx.logs, "ERROR: Message JSON missing chat/id/from/text.")
         return ctx
     end

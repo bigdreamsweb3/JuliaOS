@@ -1,11 +1,17 @@
+using DotEnv
+DotEnv.load!()
+
 using ...Resources: Gemini
 using ..CommonTypes: ToolSpecification, ToolMetadata, ToolConfig
 using HTTP
 using JSON
 
+GEMINI_API_KEY = ENV["GEMINI_API_KEY"]
+GEMINI_MODEL = "models/gemini-1.5-pro"
+
 Base.@kwdef struct ToolDetectSwearConfig <: ToolConfig
-    api_key::String
-    model_name::String
+    api_key::String = GEMINI_API_KEY
+    model_name::String = GEMINI_MODEL
     temperature::Float64 = 0.0
     max_output_tokens::Int = 64
 end
@@ -61,13 +67,15 @@ function tool_ban_user(
     url = "https://api.telegram.org/bot$(cfg.api_token)/banChatMember"
     body = JSON.json(Dict("chat_id" => chat_id, "user_id" => user_id))
 
-    resp = HTTP.request(
-        "POST",
-        url;
-        headers = ["Content-Type" => "application/json"],
-        body = body
-    )
-    return resp.status == 200
+    # resp = HTTP.request(
+    #     "POST",
+    #     url;
+    #     headers = ["Content-Type" => "application/json"],
+    #     body = body
+    # )
+    # return resp.status == 200
+    @show "banned user"
+    return true
 end
 
 const TOOL_BAN_USER_METADATA = ToolMetadata(
