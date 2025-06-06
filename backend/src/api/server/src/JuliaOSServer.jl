@@ -24,7 +24,7 @@ The following server methods must be implemented:
     - *signature:* list_agents(req::HTTP.Request;) -> Vector{AgentSummary}
 - **process_agent_webhook**
     - *invocation:* POST /agents/{agent_id}/webhook
-    - *signature:* process_agent_webhook(req::HTTP.Request, agent_id::String, process_agent_webhook_request::ProcessAgentWebhookRequest;) -> Nothing
+    - *signature:* process_agent_webhook(req::HTTP.Request, agent_id::String; request_body=nothing,) -> Nothing
 - **update_agent**
     - *invocation:* PUT /agents/{agent_id}
     - *signature:* update_agent(req::HTTP.Request, agent_id::String, agent_update::AgentUpdate;) -> AgentSummary
@@ -74,8 +74,6 @@ export AgentBlueprint
 export AgentSummary
 export AgentUpdate
 export CreateAgentRequest
-export ProcessAgentWebhookRequest
-export ProcessAgentWebhookRequestData
 export StrategyBlueprint
 export ToolBlueprint
 export TriggerConfig

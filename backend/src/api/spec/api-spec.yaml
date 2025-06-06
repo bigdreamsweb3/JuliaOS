@@ -106,19 +106,12 @@ paths:
           schema:
             type: string
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
               type: object
-              properties:
-                data:
-                  oneOf:
-                    - type: object
-                    - type: array
-                    - type: string
-                    - type: number
-                    - type: boolean
+              additionalProperties: true
               description: A payload to be passed to the agent
       responses:
         '200':

@@ -144,7 +144,7 @@ function process_agent_webhook_read(handler)
         openapi_params = Dict{String,Any}()
         path_params = HTTP.getparams(req)
         openapi_params["agent_id"] = OpenAPI.Servers.to_param(String, path_params, "agent_id", required=true, )
-        openapi_params["ProcessAgentWebhookRequest"] = OpenAPI.Servers.to_param_type(ProcessAgentWebhookRequest, String(req.body))
+        openapi_params["request_body"] = OpenAPI.Servers.to_param_type(Dict{String, Any}, String(req.body))
         req.context[:openapi_params] = openapi_params
 
         return handler(req)
@@ -162,7 +162,7 @@ end
 function process_agent_webhook_invoke(impl; post_invoke=nothing)
     function process_agent_webhook_invoke_handler(req::HTTP.Request)
         openapi_params = req.context[:openapi_params]
-        ret = impl.process_agent_webhook(req::HTTP.Request, openapi_params["agent_id"], openapi_params["ProcessAgentWebhookRequest"];)
+        ret = impl.process_agent_webhook(req::HTTP.Request, openapi_params["agent_id"]; request_body=get(openapi_params, "request_body", nothing),)
         resp = OpenAPI.Servers.server_response(ret)
         return (post_invoke === nothing) ? resp : post_invoke(req, resp)
     end
