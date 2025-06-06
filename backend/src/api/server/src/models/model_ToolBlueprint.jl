@@ -33,4 +33,6 @@ function check_required(o::ToolBlueprint)
 end
 
 function OpenAPI.validate_property(::Type{ ToolBlueprint }, name::Symbol, val)
+
+
 end

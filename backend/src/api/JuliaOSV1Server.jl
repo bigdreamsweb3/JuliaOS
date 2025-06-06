@@ -3,6 +3,7 @@ module JuliaOSV1Server
 using HTTP
 
 include("server/src/JuliaOSServer.jl")
+include("openapi_server_extensions.jl")
 
 using .JuliaOSServer
 using ..Agents: Agents, Triggers
@@ -65,16 +66,16 @@ function list_agents(req::HTTP.Request;)::Vector{AgentSummary}
     return agents
 end
 
-function process_agent_webhook(req::HTTP.Request, agent_id::String, process_agent_webhook_request::ProcessAgentWebhookRequest;)::Nothing
+function process_agent_webhook(req::HTTP.Request, agent_id::String; request_body::Dict{String,Any}=Dict{String,Any}(),)::Nothing
     @info "Triggered endpoint: POST /agents/$(agent_id)/webhook"
     agent = get(Agents.AGENTS, agent_id) do
         error("Agent $(agent_id) does not exist!")
     end
     if agent.trigger.type == Agents.CommonTypes.WEBHOOK_TRIGGER
         @info "Triggering agent $(agent_id) by webhook"
-        if hasproperty(process_agent_webhook_request, Symbol("data"))
-            @info "Passing data to agent $(agent_id) webhook: $(process_agent_webhook_request.data)"
-            Agents.run(agent, process_agent_webhook_request.data.value)
+        if !isempty(request_body)
+            @info "Passing payload to agent $(agent_id) webhook: $(request_body)"
+            Agents.run(agent, request_body)
         else
             Agents.run(agent)
         end
