@@ -67,14 +67,34 @@ function tool_ban_user(
     url = "https://api.telegram.org/bot$(cfg.api_token)/banChatMember"
     body = JSON.json(Dict("chat_id" => chat_id, "user_id" => user_id))
 
-    # resp = HTTP.request(
-    #     "POST",
-    #     url;
-    #     headers = ["Content-Type" => "application/json"],
-    #     body = body
-    # )
-    # return resp.status == 200
-    @show "banned user"
+    resp = HTTP.request(
+        "POST",
+        url;
+        headers = ["Content-Type" => "application/json"],
+        body = body
+    )
+
+    if resp.status != 200
+        @warn "Failed to ban user" user_id=user_id chat_id=chat_id status=resp.status
+        return false
+    end
+
+    msg_url = "https://api.telegram.org/bot$(cfg.api_token)/sendMessage"
+    text = "User with ID $user_id has been banned."
+    msg_body = JSON.json(Dict("chat_id" => chat_id, "text" => text))
+
+    msg_resp = HTTP.request(
+        "POST",
+        msg_url;
+        headers = ["Content-Type" => "application/json"],
+        body = msg_body
+    )
+
+    if msg_resp.status != 200
+        @warn "Failed to send ban confirmation message" chat_id=chat_id status=msg_resp.status
+        return false
+    end
+
     return true
 end
 
