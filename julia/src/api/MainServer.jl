@@ -49,7 +49,8 @@ end
 function auth_middleware(handler)
     return function(req::HTTP.Request)
         auth_enabled = MainAppConfig.get_value(APP_CONFIG, "security.enable_authentication", true)
-
+        @info "AuthMiddleware: auth_enabled = $auth_enabled"
+        
         if !auth_enabled
             return handler(req) # Authentication is disabled, proceed
         end
@@ -85,8 +86,8 @@ Configures and starts the Oxygen HTTP server for the API.
 """
 function start_server(; default_host::String="0.0.0.0", default_port::Int=8000) # Default port from Oxygen, not agents.Config
     # Use APP_CONFIG for server host and port
-    api_host = MainAppConfig.get_value(APP_CONFIG, "server.host", default_host)
-    api_port = MainAppConfig.get_value(APP_CONFIG, "server.port", default_port)
+    api_host = MainAppConfig.get_value(APP_CONFIG, "api.host", default_host)
+    api_port = MainAppConfig.get_value(APP_CONFIG, "api.port", default_port)
 
     @info "Initializing API server on $api_host:$api_port..."
 
@@ -109,7 +110,6 @@ function start_server(; default_host::String="0.0.0.0", default_port::Int=8000) 
 
     try
         Oxygen.serveparallel(; host=api_host, port=api_port, async=false, middleware=server_middleware)
-        
         @info "API server stopped."
     catch e
         @error "API server failed to start or crashed." exception=(e, catch_backtrace())

@@ -5,8 +5,8 @@ using HTTP
 using ..Utils # Updated from ApiUtils to Utils, assuming Utils.jl is in the same api/ directory
 
 # Import from the 'agents' subdirectory
-import ..agents.Agents
-import ..agents.Agents: AgentConfig, AgentType, TaskStatus # Specific types
+using ..Agents
+using ..Agents: AgentConfig, AgentType, TaskStatus # Specific types
 
 # --- Agent CRUD Handlers ---
 
@@ -26,8 +26,7 @@ function create_agent_handler(req::HTTP.Request)
         memory_config = get(body, "memory_config", Dict{String,Any}()) # Default empty dict
         queue_config = get(body, "queue_config", Dict{String,Any}()) # Default empty dict
         # Access MAX_TASK_HISTORY via the imported Agents module
-        max_task_history = get(body, "max_task_history", agents.Agents.MAX_TASK_HISTORY)
-
+        max_task_history = get(body, "max_task_history", Agents.MAX_TASK_HISTORY)
 
         if isempty(name)
             return Utils.error_response("Agent name cannot be empty", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"name"))
@@ -35,18 +34,18 @@ function create_agent_handler(req::HTTP.Request)
 
         agent_type_val = try
             # Access AgentType via the imported Agents module
-            agents.Agents.AgentType(Symbol(uppercase(type_str))) # Convert string to Symbol then to Enum
+            Agents.AgentType(Symbol(uppercase(type_str))) # Convert string to Symbol then to Enum
         catch
-            return Utils.error_response("Invalid agent type: $type_str. Must be one of $(instances(agents.Agents.AgentType))", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"type", "value_provided"=>type_str))
+            return Utils.error_response("Invalid agent type: $type_str. Must be one of $(instances(Agents.AgentType))", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"type", "value_provided"=>type_str))
         end
 
         # Access AgentConfig via the imported Agents module
-        cfg = agents.Agents.AgentConfig(name, agent_type_val; # agent_type_val is already an Enum
+        cfg = Agents.AgentConfig(name, agent_type_val; # agent_type_val is already an Enum
                           abilities=abilities, chains=chains, parameters=parameters,
                           llm_config=llm_config, memory_config=memory_config,
                           queue_config=queue_config, max_task_history=max_task_history)
 
-        new_agent = agents.Agents.createAgent(cfg)
+        new_agent = Agents.createAgent(cfg)
         return Utils.json_response(Dict("id" => new_agent.id, "name" => new_agent.name, "status" => string(new_agent.status)), 201)
     catch e
         @error "Error in create_agent_handler" exception=(e, catch_backtrace())
@@ -62,23 +61,23 @@ function list_agents_handler(req::HTTP.Request)
     filter_type = nothing
     if !isnothing(filter_type_str)
         try
-            filter_type = agents.Agents.AgentType(Symbol(uppercase(filter_type_str)))
+            filter_type = Agents.AgentType(Symbol(uppercase(filter_type_str)))
         catch
-            return Utils.error_response("Invalid filter_type: $filter_type_str. Must be one of $(instances(agents.Agents.AgentType))", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"type", "value_provided"=>filter_type_str))
+            return Utils.error_response("Invalid filter_type: $filter_type_str. Must be one of $(instances(Agents.AgentType))", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"type", "value_provided"=>filter_type_str))
         end
     end
 
     filter_status = nothing
     if !isnothing(filter_status_str)
         try
-            filter_status = agents.Agents.AgentStatus(Symbol(uppercase(filter_status_str)))
+            filter_status = Agents.AgentStatus(Symbol(uppercase(filter_status_str)))
         catch
-            return Utils.error_response("Invalid filter_status: $filter_status_str. Must be one of $(instances(agents.Agents.AgentStatus))", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"status", "value_provided"=>filter_status_str))
+            return Utils.error_response("Invalid filter_status: $filter_status_str. Must be one of $(instances(Agents.AgentStatus))", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"status", "value_provided"=>filter_status_str))
         end
     end
 
     try
-        agents_list = agents.Agents.listAgents(filter_type=filter_type, filter_status=filter_status)
+        agents_list = Agents.listAgents(filter_type=filter_type, filter_status=filter_status)
         result = [Dict("id"=>a.id, "name"=>a.name, "type"=>string(a.type), "status"=>string(a.status)) for a in agents_list]
         return Utils.json_response(result)
     catch e
@@ -92,7 +91,7 @@ function get_agent_status_handler(req::HTTP.Request, agent_id::String)
         return Utils.error_response("Agent ID cannot be empty", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"agent_id"))
     end
     try
-        status_info = agents.Agents.getAgentStatus(agent_id)
+        status_info = Agents.getAgentStatus(agent_id)
         if get(status_info, "status", "") == "not_found" || get(status_info,"error", "") == "Invalid agent ID" # getAgentStatus returns this structure
             return Utils.error_response("Agent not found", 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=Dict("agent_id" => agent_id))
         end
@@ -113,16 +112,16 @@ function update_agent_handler(req::HTTP.Request, agent_id::String)
     end
 
     try
-        updated_agent = agents.Agents.updateAgent(agent_id, body)
+        updated_agent = Agents.updateAgent(agent_id, body)
         if isnothing(updated_agent) # updateAgent returns nothing if agent not found or if payload was invalid for update
             # Check if agent exists to differentiate between not found and bad payload
-            if isnothing(agents.Agents.getAgent(agent_id))
+            if isnothing(Agents.getAgent(agent_id))
                 return Utils.error_response("Agent not found", 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=Dict("agent_id" => agent_id))
             else
                  return Utils.error_response("Update failed. Agent found but payload might be invalid or no changes made.", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("agent_id" => agent_id, "payload"=>body))
             end
         end
-        return Utils.json_response(agents.Agents.getAgentStatus(agent_id)) # Return full status after update
+        return Utils.json_response(Agents.getAgentStatus(agent_id)) # Return full status after update
     catch e
         @error "Error in update_agent_handler for agent $agent_id" exception=(e, catch_backtrace())
         return Utils.error_response("Failed to update agent: $(sprint(showerror, e))", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR)
@@ -134,7 +133,7 @@ function delete_agent_handler(req::HTTP.Request, agent_id::String)
         return Utils.error_response("Agent ID cannot be empty", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"agent_id"))
     end
     try
-        deleted = agents.Agents.deleteAgent(agent_id)
+        deleted = Agents.deleteAgent(agent_id)
         if deleted
             return Utils.json_response(Dict("message" => "Agent deleted successfully", "agent_id" => agent_id), 200)
         else
@@ -159,10 +158,10 @@ function clone_agent_handler(req::HTTP.Request, agent_id::String)
     parameter_overrides = get(body, "parameter_overrides", Dict{String,Any}())
 
     try
-        cloned_agent = agents.Agents.cloneAgent(agent_id, new_name, parameter_overrides=parameter_overrides)
+        cloned_agent = Agents.cloneAgent(agent_id, new_name, parameter_overrides=parameter_overrides)
         if isnothing(cloned_agent) # cloneAgent returns nothing if source agent not found or other error
             # Check if source agent exists
-            if isnothing(agents.Agents.getAgent(agent_id))
+            if isnothing(Agents.getAgent(agent_id))
                 return Utils.error_response("Source agent not found", 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=Dict("source_agent_id" => agent_id))
             else
                 return Utils.error_response("Failed to clone agent. An error occurred during cloning.", 500, error_code=Utils.ERROR_CODE_SERVER_ERROR, details=Dict("source_agent_id" => agent_id))
@@ -196,7 +195,7 @@ function bulk_delete_agents_handler(req::HTTP.Request)
             continue
         end
         try
-            deleted = agents.Agents.deleteAgent(agent_id)
+            deleted = Agents.deleteAgent(agent_id)
             if deleted
                 push!(results, Dict("agent_id" => agent_id, "success" => true, "message" => "Agent deleted successfully"))
             else
@@ -229,7 +228,7 @@ function agent_lifecycle_handler(agent_id::String, action_func::Function, action
     end
     try
         # Check if agent exists before attempting action
-        current_agent_check = agents.Agents.getAgent(agent_id)
+        current_agent_check = Agents.getAgent(agent_id)
         if isnothing(current_agent_check)
             return Utils.error_response("Agent not found", 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=Dict("agent_id" => agent_id, "action" => action_name))
         end
@@ -237,7 +236,7 @@ function agent_lifecycle_handler(agent_id::String, action_func::Function, action
         success = action_func(agent_id) # Calls functions like Agents.startAgent
         
         # Re-fetch agent to get the most up-to-date status after the action
-        current_agent = agents.Agents.getAgent(agent_id) 
+        current_agent = Agents.getAgent(agent_id) 
         # This should ideally not be nothing if the check above passed and action didn't delete it (which lifecycle actions don't)
         current_status_str = isnothing(current_agent) ? "unknown_after_action" : string(current_agent.status)
 
@@ -254,10 +253,10 @@ function agent_lifecycle_handler(agent_id::String, action_func::Function, action
     end
 end
 
-start_agent_handler(req::HTTP.Request, agent_id::String) = agent_lifecycle_handler(agent_id, agents.Agents.startAgent, "start")
-stop_agent_handler(req::HTTP.Request, agent_id::String) = agent_lifecycle_handler(agent_id, agents.Agents.stopAgent, "stop")
-pause_agent_handler(req::HTTP.Request, agent_id::String) = agent_lifecycle_handler(agent_id, agents.Agents.pauseAgent, "pause")
-resume_agent_handler(req::HTTP.Request, agent_id::String) = agent_lifecycle_handler(agent_id, agents.Agents.resumeAgent, "resume")
+start_agent_handler(req::HTTP.Request, agent_id::String) = agent_lifecycle_handler(agent_id, Agents.startAgent, "start")
+stop_agent_handler(req::HTTP.Request, agent_id::String) = agent_lifecycle_handler(agent_id, Agents.stopAgent, "stop")
+pause_agent_handler(req::HTTP.Request, agent_id::String) = agent_lifecycle_handler(agent_id, Agents.pauseAgent, "pause")
+resume_agent_handler(req::HTTP.Request, agent_id::String) = agent_lifecycle_handler(agent_id, Agents.resumeAgent, "resume")
 
 # --- Agent Task Handlers ---
 
@@ -274,7 +273,7 @@ function execute_agent_task_handler(req::HTTP.Request, agent_id::String)
     end
 
     try
-        result = agents.Agents.executeAgentTask(agent_id, task_payload)
+        result = Agents.executeAgentTask(agent_id, task_payload)
         # executeAgentTask returns a Dict with "success", "error", "agent_id", "task_id"
         if get(result, "success", false)
             status_code = get(result, "queued", false) ? 202 : 200 # 202 Accepted if queued, 200 OK if direct
@@ -309,9 +308,9 @@ function list_agent_tasks_handler(req::HTTP.Request, agent_id::String)
     status_filter = nothing
     if !isnothing(status_filter_str)
         try
-            status_filter = agents.Agents.TaskStatus(Symbol(uppercase(status_filter_str)))
+            status_filter = Agents.TaskStatus(Symbol(uppercase(status_filter_str)))
         catch
-            return Utils.error_response("Invalid status_filter: $status_filter_str. Must be one of $(instances(agents.Agents.TaskStatus))", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"status_filter", "value_provided"=>status_filter_str))
+            return Utils.error_response("Invalid status_filter: $status_filter_str. Must be one of $(instances(Agents.TaskStatus))", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("field"=>"status_filter", "value_provided"=>status_filter_str))
         end
     end
     limit = try parse(Int, limit_str) catch; 100 end
@@ -320,7 +319,7 @@ function list_agent_tasks_handler(req::HTTP.Request, agent_id::String)
     end
 
     try
-        result = agents.Agents.listAgentTasks(agent_id, status_filter=status_filter, limit=limit)
+        result = Agents.listAgentTasks(agent_id, status_filter=status_filter, limit=limit)
         # listAgentTasks returns a dict with "success", "error" keys or "tasks"
         if !get(result, "success", false) # Check if the underlying call failed (e.g. agent not found)
             err_msg = get(result, "error", "Failed to list tasks")
@@ -343,7 +342,7 @@ function get_task_status_handler(req::HTTP.Request, agent_id::String, task_id::S
         return Utils.error_response("Agent ID and Task ID cannot be empty", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("fields"=>["agent_id", "task_id"]))
     end
     try
-        result = agents.Agents.getTaskStatus(agent_id, task_id)
+        result = Agents.getTaskStatus(agent_id, task_id)
         # getTaskStatus returns a dict with "status" and "error" if not found
         if get(result, "status", "") == "error" 
             err_msg = get(result, "error", "Failed to get task status")
@@ -368,7 +367,7 @@ function get_task_result_handler(req::HTTP.Request, agent_id::String, task_id::S
         return Utils.error_response("Agent ID and Task ID cannot be empty", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("fields"=>["agent_id", "task_id"]))
     end
     try
-        result = agents.Agents.getTaskResult(agent_id, task_id)
+        result = Agents.getTaskResult(agent_id, task_id)
         if get(result, "status", "") == "error"
             err_msg = get(result, "error", "Failed to get task result")
             details = Dict("agent_id"=>agent_id, "task_id"=>task_id)
@@ -392,7 +391,7 @@ function cancel_task_handler(req::HTTP.Request, agent_id::String, task_id::Strin
         return Utils.error_response("Agent ID and Task ID cannot be empty", 400, error_code=Utils.ERROR_CODE_INVALID_INPUT, details=Dict("fields"=>["agent_id", "task_id"]))
     end
     try
-        result = agents.Agents.cancelTask(agent_id, task_id)
+        result = Agents.cancelTask(agent_id, task_id)
         if !get(result, "success", false)
             err_msg = get(result, "error", "Failed to cancel task")
             details = Dict("agent_id"=>agent_id, "task_id"=>task_id, "raw_result"=>result)
@@ -421,10 +420,10 @@ function get_agent_memory_handler(req::HTTP.Request, agent_id::String, key::Stri
     end
     try
         # First check if agent exists
-        if isnothing(agents.Agents.getAgent(agent_id))
+        if isnothing(Agents.getAgent(agent_id))
              return Utils.error_response("Agent not found", 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=Dict("agent_id" => agent_id))
         end
-        value = agents.Agents.getAgentMemory(agent_id, key)
+        value = Agents.getAgentMemory(agent_id, key)
         if isnothing(value) # Agent found, but key not found in memory
             # It's debatable if this is a 404 for the key or a 200 with null value.
             # For an API, 404 for a specific sub-resource (the key) is common.
@@ -449,11 +448,11 @@ function set_agent_memory_handler(req::HTTP.Request, agent_id::String, key::Stri
 
     try
         # Check if agent exists before trying to set memory
-        if isnothing(agents.Agents.getAgent(agent_id))
+        if isnothing(Agents.getAgent(agent_id))
             return Utils.error_response("Agent not found", 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=Dict("agent_id" => agent_id))
         end
         
-        success = agents.Agents.setAgentMemory(agent_id, key, value_to_set)
+        success = Agents.setAgentMemory(agent_id, key, value_to_set)
         # setAgentMemory in Agents.jl returns true if agent found, false otherwise.
         # Since we checked agent existence above, success should be true here.
         # If it were to return false, it would imply an issue within setAgentMemory itself after agent was confirmed.
@@ -476,11 +475,11 @@ function clear_agent_memory_handler(req::HTTP.Request, agent_id::String)
     end
     try
         # Check if agent exists
-        if isnothing(agents.Agents.getAgent(agent_id))
+        if isnothing(Agents.getAgent(agent_id))
             return Utils.error_response("Agent not found", 404, error_code=Utils.ERROR_CODE_NOT_FOUND, details=Dict("agent_id" => agent_id))
         end
 
-        success = agents.Agents.clearAgentMemory(agent_id)
+        success = Agents.clearAgentMemory(agent_id)
         # Similar to setAgentMemory, success should be true if agent was found.
         if success
             return Utils.json_response(Dict("message" => "Agent memory cleared successfully", "agent_id" => agent_id))
@@ -521,7 +520,7 @@ function evaluate_agent_fitness_handler(req::HTTP.Request, agent_id::String)
 
     try
         # This function will be implemented in Agents.jl
-        result = agents.Agents.evaluateAgentFitness(agent_id, objective_function_id, candidate_solution, problem_context)
+        result = Agents.evaluateAgentFitness(agent_id, objective_function_id, candidate_solution, problem_context)
         
         if get(result, "success", false)
             return Utils.json_response(Dict("fitness_value" => result["fitness_value"], "agent_id" => agent_id, "objective_function_id" => objective_function_id), 200)

@@ -8,21 +8,36 @@
 
 @info "Loading backend modules..."
 
-# Load Core Modules from agents/
-include("agents/Config.jl")
-include("agents/AgentMetrics.jl") # Depends on Config
-# include("agents/AgentMonitor.jl") # Uncomment if you have this module
-include("agents/LLMIntegration.jl") # Might depend on Config
-include("agents/Agents.jl")       # Depends on Config, AgentMetrics, LLMIntegration
-include("agents/Persistence.jl")  # Depends on Agents, Config, AgentMetrics
+# 1. Basic Configuration Module - No dependencies
+include("../agents/Config.jl")
 
-# Load API Layer Modules from api/
-include("api/Utils.jl") # Renamed from ApiUtils.jl
-include("api/AgentHandlers.jl")    # Depends on api/Utils.jl and agents/Agents.jl
-include("api/MetricsHandlers.jl")  # Depends on api/Utils.jl and agents/AgentMetrics.jl
-include("api/LlmHandlers.jl")      # Depends on api/Utils.jl and agents/LLMIntegration.jl, agents/Config.jl
-include("api/Routes.jl")           # Depends on handler modules
-include("api/MainServer.jl")       # Depends on api/Routes.jl and agents/Config.jl
+# 2. Core Modules - Depend on Config
+include("../agents/AgentCore.jl")
+include("../agents/AgentMetrics.jl")  # Depends on Config, AgentCore
+
+# 3. Feature Modules - Depend on basic modules
+include("../agents/LLMIntegration.jl")  # Depends on Config
+include("../agents/Persistence.jl")     # Depends on Config, AgentMetrics
+include("../agents/Agents.jl")          # Depends on Config, AgentMetrics, LLMIntegration, Persistence
+include("../agents/AgentMonitor.jl")    # Depends on Config, AgentMetrics, Agents
+
+# 4. API Layer Modules - Depend on all basic modules
+include("Utils.jl")
+include("AgentHandlers.jl")    # Depends on api/Utils.jl and agents/Agents.jl
+include("Routes.jl")           # Depends on handler modules
+include("MainServer.jl")       # Depends on api/Routes.jl and agents/Config.jl
+
+# 5. Export modules for other modules to use
+using .Config
+using .AgentCore
+using .AgentMetrics
+using .LLMIntegration
+using .Persistence
+using .Agents
+using .AgentMonitor
+
+using .Routes
+using .MainServer
 
 # It's generally better practice to structure your project as a Julia package.
 # If structured as a package (e.g., JuliaOS), your imports would be like:
@@ -43,7 +58,7 @@ function main()
     try
         # Assuming MainServer.jl defines `module MainServer`
         # and `start_server` is exported or accessed via MainServer.start_server
-        api.MainServer.start_server() # Or just MainServer.start_server() if `using .api.MainServer`
+        MainServer.start_server() # Or just MainServer.start_server() if `using .api.MainServer`
     catch e
         @error "Failed to start the API server or server crashed." exception=(e, catch_backtrace())
         # exit(1) # Optionally exit if server fails to start

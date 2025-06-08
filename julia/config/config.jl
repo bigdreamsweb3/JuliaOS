@@ -1,13 +1,14 @@
 module Config
 
+using TOML  # Add TOML package import
+
 export load, get_value
 
 # Default configuration
 const DEFAULT_CONFIG = Dict(
-    "server" => Dict(
-        "host" => "localhost",
+    "api" => Dict(
+        "host" => "127.0.0.1",
         "port" => 8052,
-        "workers" => 4,
         "log_level" => "info"
     ),
     "storage" => Dict(
@@ -111,29 +112,33 @@ Environment variables take precedence over file configuration.
 function load(config_path=nothing)
     # Start with default configuration
     config_data = deepcopy(DEFAULT_CONFIG)
+    println("Starting to load configuration...")
 
     # Load from file if provided
     if !isnothing(config_path) && isfile(config_path)
+        println("Attempting to load configuration from specified path: $config_path")
         try
-            file_config = Dict{String, Any}()
-            # In a real implementation, you would use TOML.parsefile here
-            # For now, we'll just use the default config
+            file_config = TOML.parsefile(config_path)
+            println("Successfully loaded configuration from specified path")
             merge_configs!(config_data, file_config)
         catch e
-            @warn "Error loading configuration file: $e"
+            @warn "Failed to load configuration from specified path: $e"
         end
     elseif isfile(joinpath(@__DIR__, "config.toml"))
+        println("Attempting to load configuration from default path: $(joinpath(@__DIR__, "config.toml"))")
         try
-            file_config = Dict{String, Any}()
-            # In a real implementation, you would use TOML.parsefile here
-            # For now, we'll just use the default config
+            file_config = TOML.parsefile(joinpath(@__DIR__, "config.toml"))
+            println("Successfully loaded configuration from default path")
             merge_configs!(config_data, file_config)
         catch e
-            @warn "Error loading default configuration file: $e"
+            @warn "Failed to load configuration from default path: $e"
         end
+    else
+        println("No configuration file found")
     end
 
     # Override with environment variables
+    println("Starting to load configuration from environment variables...")
     override_from_env!(config_data)
 
     return Configuration(config_data)
