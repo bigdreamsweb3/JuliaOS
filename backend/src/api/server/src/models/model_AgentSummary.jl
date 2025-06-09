@@ -33,10 +33,7 @@ function check_required(o::AgentSummary)
 end
 
 function OpenAPI.validate_property(::Type{ AgentSummary }, name::Symbol, val)
-
-
     if name === Symbol("state")
         OpenAPI.validate_param(name, "AgentSummary", :enum, val, ["CREATED", "RUNNING", "PAUSED", "STOPPED"])
     end
-
 end

@@ -98,6 +98,24 @@ function get_agent_output(req::HTTP.Request, agent_id::String;)::Dict{String, An
     return Dict{String, Any}()
 end
 
+function list_strategies(req::HTTP.Request;)::Vector{StrategySummary}
+    @info "Triggered endpoint: GET /strategies"
+    strategies = Vector{StrategySummary}()
+    for (name, spec) in Agents.Strategies.STRATEGY_REGISTRY
+        push!(strategies, StrategySummary(name))
+    end
+    return strategies
+end
+
+function list_tools(req::HTTP.Request;)::Vector{ToolSummary}
+    @info "Triggered endpoint: GET /tools"
+    tools = Vector{ToolSummary}()
+    for (name, tool) in Agents.Tools.TOOL_REGISTRY
+        push!(tools, ToolSummary(name, tool.metadata.description))
+    end
+    return tools
+end
+
 function run_server(port=8052)
     try
         router = HTTP.Router()

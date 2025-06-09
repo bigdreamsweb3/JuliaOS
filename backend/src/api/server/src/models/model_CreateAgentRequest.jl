@@ -33,6 +33,4 @@ function check_required(o::CreateAgentRequest)
 end
 
 function OpenAPI.validate_property(::Type{ CreateAgentRequest }, name::Symbol, val)
-
-
 end

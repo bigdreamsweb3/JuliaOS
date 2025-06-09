@@ -22,6 +22,12 @@ The following server methods must be implemented:
 - **list_agents**
     - *invocation:* GET /agents
     - *signature:* list_agents(req::HTTP.Request;) -> Vector{AgentSummary}
+- **list_strategies**
+    - *invocation:* GET /strategies
+    - *signature:* list_strategies(req::HTTP.Request;) -> Vector{StrategySummary}
+- **list_tools**
+    - *invocation:* GET /tools
+    - *signature:* list_tools(req::HTTP.Request;) -> Vector{ToolSummary}
 - **process_agent_webhook**
     - *invocation:* POST /agents/{agent_id}/webhook
     - *signature:* process_agent_webhook(req::HTTP.Request, agent_id::String; request_body=nothing,) -> Nothing
@@ -75,7 +81,10 @@ export AgentSummary
 export AgentUpdate
 export CreateAgentRequest
 export StrategyBlueprint
+export StrategySummary
 export ToolBlueprint
+export ToolSummary
+export ToolSummaryMetadata
 export TriggerConfig
 
 end # module JuliaOSServer

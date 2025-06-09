@@ -33,10 +33,7 @@ function check_required(o::TriggerConfig)
 end
 
 function OpenAPI.validate_property(::Type{ TriggerConfig }, name::Symbol, val)
-
     if name === Symbol("type")
         OpenAPI.validate_param(name, "TriggerConfig", :enum, val, ["webhook"])
     end
-
-
 end

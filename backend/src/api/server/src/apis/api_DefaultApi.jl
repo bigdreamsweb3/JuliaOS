@@ -139,6 +139,58 @@ function list_agents_invoke(impl; post_invoke=nothing)
     end
 end
 
+function list_strategies_read(handler)
+    function list_strategies_read_handler(req::HTTP.Request)
+        openapi_params = Dict{String,Any}()
+        req.context[:openapi_params] = openapi_params
+
+        return handler(req)
+    end
+end
+
+function list_strategies_validate(handler)
+    function list_strategies_validate_handler(req::HTTP.Request)
+        openapi_params = req.context[:openapi_params]
+        
+        return handler(req)
+    end
+end
+
+function list_strategies_invoke(impl; post_invoke=nothing)
+    function list_strategies_invoke_handler(req::HTTP.Request)
+        openapi_params = req.context[:openapi_params]
+        ret = impl.list_strategies(req::HTTP.Request;)
+        resp = OpenAPI.Servers.server_response(ret)
+        return (post_invoke === nothing) ? resp : post_invoke(req, resp)
+    end
+end
+
+function list_tools_read(handler)
+    function list_tools_read_handler(req::HTTP.Request)
+        openapi_params = Dict{String,Any}()
+        req.context[:openapi_params] = openapi_params
+
+        return handler(req)
+    end
+end
+
+function list_tools_validate(handler)
+    function list_tools_validate_handler(req::HTTP.Request)
+        openapi_params = req.context[:openapi_params]
+        
+        return handler(req)
+    end
+end
+
+function list_tools_invoke(impl; post_invoke=nothing)
+    function list_tools_invoke_handler(req::HTTP.Request)
+        openapi_params = req.context[:openapi_params]
+        ret = impl.list_tools(req::HTTP.Request;)
+        resp = OpenAPI.Servers.server_response(ret)
+        return (post_invoke === nothing) ? resp : post_invoke(req, resp)
+    end
+end
+
 function process_agent_webhook_read(handler)
     function process_agent_webhook_read_handler(req::HTTP.Request)
         openapi_params = Dict{String,Any}()
@@ -204,6 +256,8 @@ function registerDefaultApi(router::HTTP.Router, impl; path_prefix::String="", o
     HTTP.register!(router, "GET", path_prefix * "/agents/{agent_id}/logs", OpenAPI.Servers.middleware(impl, get_agent_logs_read, get_agent_logs_validate, get_agent_logs_invoke; optional_middlewares...))
     HTTP.register!(router, "GET", path_prefix * "/agents/{agent_id}/output", OpenAPI.Servers.middleware(impl, get_agent_output_read, get_agent_output_validate, get_agent_output_invoke; optional_middlewares...))
     HTTP.register!(router, "GET", path_prefix * "/agents", OpenAPI.Servers.middleware(impl, list_agents_read, list_agents_validate, list_agents_invoke; optional_middlewares...))
+    HTTP.register!(router, "GET", path_prefix * "/strategies", OpenAPI.Servers.middleware(impl, list_strategies_read, list_strategies_validate, list_strategies_invoke; optional_middlewares...))
+    HTTP.register!(router, "GET", path_prefix * "/tools", OpenAPI.Servers.middleware(impl, list_tools_read, list_tools_validate, list_tools_invoke; optional_middlewares...))
     HTTP.register!(router, "POST", path_prefix * "/agents/{agent_id}/webhook", OpenAPI.Servers.middleware(impl, process_agent_webhook_read, process_agent_webhook_validate, process_agent_webhook_invoke; optional_middlewares...))
     HTTP.register!(router, "PUT", path_prefix * "/agents/{agent_id}", OpenAPI.Servers.middleware(impl, update_agent_read, update_agent_validate, update_agent_invoke; optional_middlewares...))
     return router

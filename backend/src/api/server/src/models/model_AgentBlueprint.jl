@@ -38,7 +38,4 @@ function check_required(o::AgentBlueprint)
 end
 
 function OpenAPI.validate_property(::Type{ AgentBlueprint }, name::Symbol, val)
-
-
-
 end

@@ -5,7 +5,10 @@ docs/AgentUpdate.md
 docs/CreateAgentRequest.md
 docs/DefaultApi.md
 docs/StrategyBlueprint.md
+docs/StrategySummary.md
 docs/ToolBlueprint.md
+docs/ToolSummary.md
+docs/ToolSummaryMetadata.md
 docs/TriggerConfig.md
 src/JuliaOSServer.jl
 src/apis/api_DefaultApi.jl
@@ -15,5 +18,8 @@ src/models/model_AgentSummary.jl
 src/models/model_AgentUpdate.jl
 src/models/model_CreateAgentRequest.jl
 src/models/model_StrategyBlueprint.jl
+src/models/model_StrategySummary.jl
 src/models/model_ToolBlueprint.jl
+src/models/model_ToolSummary.jl
+src/models/model_ToolSummaryMetadata.jl
 src/models/model_TriggerConfig.jl
