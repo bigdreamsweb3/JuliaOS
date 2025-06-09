@@ -54,11 +54,13 @@ abstract type StrategyConfig end
 
 struct StrategySpecification
     run::Function
+    initialize::Union{Nothing, Function}
     config_type::DataType
 end
 
 struct InstantiatedStrategy
     run::Function
+    initialize::Union{Nothing, Function}
     config::StrategyConfig
 end
 

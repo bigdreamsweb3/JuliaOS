@@ -79,5 +79,6 @@ end
 
 const STRATEGY_TELEGRAM_MODERATOR_SPECIFICATION = StrategySpecification(
     strategy_telegram_moderator,
+    nothing,
     StrategyTelegramModeratorConfig
 )

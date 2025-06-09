@@ -38,6 +38,8 @@ function create_agent(
 
     AGENTS[id] = agent
 
+    initialize(agent)
+
     return agent
 end
 
@@ -83,4 +85,19 @@ function run(
 
     @info "Executing strategy of agent $(agent.id)"
     return agent.strategy.run(agent.strategy.config, agent.context, input)
+end
+
+function initialize(
+    agent::Agent,
+)
+    if agent.state != CommonTypes.CREATED_STATE
+        error("Agent with ID '$(agent.id)' is not in CREATED state.")
+    end
+
+    @info "Initializing strategy of agent $(agent.id)"
+    if agent.strategy.initialize !== nothing
+        return agent.strategy.initialize(agent.strategy.config, agent.context)
+    else
+        return nothing
+    end
 end

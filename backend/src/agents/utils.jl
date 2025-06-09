@@ -41,7 +41,7 @@ function instantiate_strategy(blueprint::StrategyBlueprint)::InstantiatedStrateg
 
     strategy_config = deserialize_object(strategy_spec.config_type, blueprint.config_data)
 
-    return InstantiatedStrategy(strategy_spec.run, strategy_config)
+    return InstantiatedStrategy(strategy_spec.run, strategy_spec.initialize, strategy_config)
 end
 
 const AGENT_STATE_NAMES = Dict(
