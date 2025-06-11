@@ -114,6 +114,27 @@ end
 # FUNCTIONS
 # ----------------------------------------------------------------------
 """
+    make_gemini_config(cfg::StrategyPlanAndExecuteConfig)::Gemini.GeminiConfig
+
+Creates a GeminiConfig from the StrategyPlanAndExecuteConfig.
+
+# Arguments
+- `cfg::StrategyPlanAndExecuteConfig`: Strategy configuration containing Gemini parameters
+
+# Returns
+- A Gemini.GeminiConfig object with the specified parameters
+"""
+function make_gemini_config(cfg::StrategyPlanAndExecuteConfig)
+    return Gemini.GeminiConfig(
+        api_key = cfg.api_key,
+        model_name = cfg.model_name,
+        temperature = cfg.temperature,
+        max_output_tokens = cfg.max_output_tokens
+    )
+end
+
+
+"""
     format_tools_for_prompt(tools::Vector{InstantiatedTool})::String
 
 Formats the list of tools for inclusion in prompts.
@@ -185,12 +206,7 @@ function create_plan(cfg::StrategyPlanAndExecuteConfig, ctx::AgentContext, input
     # Replace placeholders in the planning prompt
     prompt = replace(PLANNING_PROMPT, "{tools}" => tools_str, "{input}" => input)
 
-    gemini_cfg = Gemini.GeminiConfig(
-        api_key = cfg.api_key,
-        model_name = cfg.model_name,
-        temperature = cfg.temperature,
-        max_output_tokens = cfg.max_output_tokens
-    )
+    gemini_cfg = make_gemini_config(cfg)
 
     # Send the prompt to the LLM
     response = Gemini.gemini_util(
@@ -239,12 +255,8 @@ function execute_step(cfg::StrategyPlanAndExecuteConfig, ctx::AgentContext, step
                      "{current_step}" => step.description)
 
     
-    gemini_cfg = Gemini.GeminiConfig(
-        api_key = cfg.api_key,
-        model_name = cfg.model_name,
-        temperature = cfg.temperature,
-        max_output_tokens = cfg.max_output_tokens
-    )
+    gemini_cfg = make_gemini_config(cfg)
+
     # Send the prompt to the LLM
     raw_response = Gemini.gemini_util(
         gemini_cfg,
@@ -361,12 +373,7 @@ Main plan-and-execute function, includes planning, step execution, and final sum
 - Updated AgentContext with logs and final result.
 """
 function strategy_plan_and_execute(cfg::StrategyPlanAndExecuteConfig, ctx::AgentContext, input::String)::AgentContext
-    gemini_cfg = Gemini.GeminiConfig(
-        api_key = cfg.api_key,
-        model_name = cfg.model_name,
-        temperature = cfg.temperature,
-        max_output_tokens = cfg.max_output_tokens
-    )
+    gemini_cfg = make_gemini_config(cfg)
     
     # Logging: Plan creation
     push!(ctx.logs, "Creating plan for input: $(input)")
