@@ -4,6 +4,7 @@ export TOOL_REGISTRY
 
 include("tool_example_adder.jl")
 include("tool_example_telegram.jl")
+include("tool_example_plan_and_execute.jl")
 
 using ..CommonTypes: ToolSpecification
 
@@ -21,5 +22,7 @@ end
 register_tool("adder", TOOL_EXAMPLE_ADDER_SPECIFICATION)
 register_tool("detect_swearing", TOOL_DETECT_SWEAR_SPECIFICATION)
 register_tool("ban_user", TOOL_BAN_USER_SPECIFICATION)
+register_tool("ping", TOOL_PING_SPECIFICATION)
+register_tool("llm_chat", TOOL_LLM_CHAT_SPECIFICATION)
 
 end
