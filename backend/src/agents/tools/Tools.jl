@@ -4,7 +4,8 @@ export TOOL_REGISTRY
 
 include("tool_example_adder.jl")
 include("tool_example_telegram.jl")
-include("tool_example_plan_and_execute.jl")
+include("tool_ping.jl")
+include("tool_llm_chat.jl")
 
 using ..CommonTypes: ToolSpecification
 
