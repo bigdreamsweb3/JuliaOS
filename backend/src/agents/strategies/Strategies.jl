@@ -4,6 +4,7 @@ export STRATEGY_REGISTRY
 
 include("strategy_example_adder.jl")
 include("strategy_example_telegram.jl")
+include("strategy_plan_and_execute.jl")
 
 using ..CommonTypes: StrategySpecification
 
@@ -20,5 +21,6 @@ end
 
 register_strategy("adder", STRATEGY_EXAMPLE_ADDER_SPECIFICATION)
 register_strategy("telegram_moderator", STRATEGY_TELEGRAM_MODERATOR_SPECIFICATION)
+register_strategy("plan_execute", STRATEGY_PLAN_AND_EXECUTE_SPECIFICATION)
 
 end
