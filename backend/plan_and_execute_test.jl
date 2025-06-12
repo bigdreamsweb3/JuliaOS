@@ -1,9 +1,6 @@
 using Pkg
 Pkg.activate(".")
 
-using DotEnv
-DotEnv.load!()
-
 using JuliaOSBackend.Agents
 using JuliaOSBackend.Agents.CommonTypes: AgentBlueprint, ToolBlueprint, StrategyBlueprint, TriggerConfig, WebhookTriggerParams
 
@@ -17,25 +14,12 @@ function main()
         @info " - $name: $spec"
     end
 
-    gemini_api_key = ENV["GEMINI_API_KEY"]
-    gemini_model   = "models/gemini-1.5-pro"
-
     tool_blueprints = [
         ToolBlueprint("ping", Dict()),
-        ToolBlueprint("llm_chat", Dict(
-            "api_key"         => gemini_api_key,
-            "model_name"      => gemini_model,
-            "temperature"     => 0.7,
-            "max_output_tokens" => 64
-        ))
+        ToolBlueprint("llm_chat", Dict())
     ]
+    strategy_config = Dict()
 
-    strategy_config = Dict(
-        "api_key"         => gemini_api_key,
-        "model_name"      => gemini_model,
-        "temperature"     => 0.7,
-        "max_output_tokens" => 1024
-    )
     plan_execute_blueprint = AgentBlueprint(
         tool_blueprints,
         StrategyBlueprint("plan_execute", strategy_config),
