@@ -441,5 +441,6 @@ end
 
 const STRATEGY_PLAN_AND_EXECUTE_SPECIFICATION = StrategySpecification(
     strategy_plan_and_execute,
+    nothing,
     StrategyPlanAndExecuteConfig
 )
