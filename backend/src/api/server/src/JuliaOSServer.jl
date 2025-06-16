@@ -13,6 +13,9 @@ The following server methods must be implemented:
 - **delete_agent**
     - *invocation:* DELETE /agents/{agent_id}
     - *signature:* delete_agent(req::HTTP.Request, agent_id::String;) -> Nothing
+- **get_agent**
+    - *invocation:* GET /agents/{agent_id}
+    - *signature:* get_agent(req::HTTP.Request, agent_id::String;) -> AgentSummary
 - **get_agent_logs**
     - *invocation:* GET /agents/{agent_id}/logs
     - *signature:* get_agent_logs(req::HTTP.Request, agent_id::String;) -> Dict{String, Any}
