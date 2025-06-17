@@ -124,12 +124,12 @@ function list_tools(req::HTTP.Request;)::Vector{ToolSummary}
     return tools
 end
 
-function run_server(port=8052)
+function run_server(host::AbstractString="0.0.0.0", port::Integer=8052)
     try
         router = HTTP.Router()
         router = JuliaOSServer.register(router, @__MODULE__; path_prefix="/api/v1")
         HTTP.register!(router, "GET", "/ping", ping)
-        server[] = HTTP.serve!(router, port)
+        server[] = HTTP.serve!(router, host, port)
         wait(server[])
     catch ex
         @error("Server error", exception=(ex, catch_backtrace()))

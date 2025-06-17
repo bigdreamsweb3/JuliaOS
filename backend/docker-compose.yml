@@ -1,0 +1,13 @@
+services:
+  julia_backend:
+    build: .
+    container_name: julia_backend
+    env_file:
+      - .env
+    environment:
+      JULIA_PROJECT: "@."
+      HOST: "0.0.0.0"
+      PORT: "8052"
+    ports:
+      - "8052:8052"
+    restart: unless-stopped
