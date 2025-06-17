@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecifications
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification
 using HTTP
 using JSON
 
