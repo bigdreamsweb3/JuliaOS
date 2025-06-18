@@ -1,3 +1,6 @@
+using DotEnv
+DotEnv.load!()
+
 using Pkg
 Pkg.activate(".")
 
