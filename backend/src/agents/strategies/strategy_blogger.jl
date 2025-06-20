@@ -3,7 +3,7 @@ using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification
 Base.@kwdef struct StrategyBlogWriterConfig <: StrategyConfig
 end
 
-function strategy_blog_writer(
+function strategy_blogger(
         cfg::StrategyBlogWriterConfig,
         ctx::AgentContext,
         input::Dict{String,Any}
@@ -59,7 +59,7 @@ function strategy_blog_writer(
 end
 
 const STRATEGY_BLOG_WRITER_SPECIFICATION = StrategySpecification(
-    strategy_blog_writer,
+    strategy_blogger,
     nothing,
     StrategyBlogWriterConfig
 )

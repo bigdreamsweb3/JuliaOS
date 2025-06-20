@@ -5,7 +5,7 @@ export STRATEGY_REGISTRY
 include("strategy_example_adder.jl")
 include("strategy_example_telegram.jl")
 include("strategy_plan_and_execute.jl")
-include("strategy_blog_writer.jl")
+include("strategy_blogger.jl")
 
 using ..CommonTypes: StrategySpecification
 

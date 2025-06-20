@@ -39,16 +39,16 @@ function main()
         TriggerConfig(Agents.CommonTypes.WEBHOOK_TRIGGER, WebhookTriggerParams())
     )
     
-    blog_writer_agent = Agents.create_agent("blog_writer_agent", blog_writer_blueprint)
-    @info "Created blogger agent: $blog_writer_agent"
+    blogger_agent = Agents.create_agent("blogger_agent", blog_writer_blueprint)
+    @info "Created blogger agent: $blogger_agent"
 
     @info "Existing agents:"
     for (name, agent) in Agents.AGENTS
         @info " - $name: $agent"
     end
 
-    Agents.set_agent_state(blog_writer_agent, Agents.CommonTypes.RUNNING_STATE)
-    @info "plan_execute_agent is now RUNNING"
+    Agents.set_agent_state(blogger_agent, Agents.CommonTypes.RUNNING_STATE)
+    @info "blogger_agent is now RUNNING"
 
     task = Dict{String, Any}(
         "title" => "My favourite Julia features",
@@ -58,10 +58,10 @@ function main()
     )
 
     @info "Running Blogger agent with task: $task"
-    Agents.run(blog_writer_agent, task)
+    Agents.run(blogger_agent, task)
 
     @info "Agent logs after sample runs:"
-    for log in blog_writer_agent.context.logs
+    for log in blogger_agent.context.logs
         @info " - $log"
     end
 
