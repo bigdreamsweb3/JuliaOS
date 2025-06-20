@@ -17,6 +17,24 @@ end
 
 const ALLOWED_FORMATS = Set(["plain", "markdown", "html"])
 
+"""
+    tool_write_blog(cfg::ToolBlogWriterConfig, task::Dict) -> Dict{String, Any}
+
+Generates a structured blog post based on a given topic and optional settings.
+
+# Arguments
+- `cfg::ToolBlogWriterConfig`: Tool config.
+- `task::Dict`: A dictionary with blog generation instructions.
+    - Required key:
+        - "title": The topic of the blog post.
+    - Optional keys:
+        - "tone": Tone of the blog post (e.g., "neutral", "formal", "casual", "humorous"). Default: "neutral".
+        - "max_characters_amount": Maximum allowed character length for the post. Default: 500.
+        - "output_format": Format of the returned content. One of: "plain", "markdown", "html". Default: "plain".
+
+# Returns
+A dictionary with the execution result.
+"""
 function tool_write_blog(cfg::ToolBlogWriterConfig, task::Dict)
     if !haskey(task, "title") || !(task["title"] isa AbstractString)
         return Dict("success" => false, "error" => "Missing or invalid 'topic'")
@@ -26,12 +44,12 @@ function tool_write_blog(cfg::ToolBlogWriterConfig, task::Dict)
 
     title = task["title"]
     tone = get(task, "tone", "neutral")
-    length = get(task, "length", "medium")
+    max_characters_amount = get(task, "max_characters_amount", 500)
     output_format = get(task, "output_format", "plain")
 
     prompt = """
     Write a blog post on the topic "$title" in a $tone tone.
-    The post should be $length length and include an introduction, 2–3 paragraphs in the body, and a conclusion.
+    The post must contain maximun $(max_characters_amount) characters.
     Make it engaging and well-structured.
     Return the output in the following format: $output_format.
     """

@@ -7,6 +7,7 @@ include("tool_example_telegram.jl")
 include("tool_ping.jl")
 include("tool_llm_chat.jl")
 include("tool_write_blog.jl")
+include("tool_post_to_x.jl")
 
 using ..CommonTypes: ToolSpecification
 
@@ -27,5 +28,6 @@ register_tool("ban_user", TOOL_BAN_USER_SPECIFICATION)
 register_tool("ping", TOOL_PING_SPECIFICATION)
 register_tool("llm_chat", TOOL_LLM_CHAT_SPECIFICATION)
 register_tool("write_blog", TOOL_BLOG_WRITER_SPECIFICATION)
+register_tool("post_to_x", TOOL_POST_TO_X_SPECIFICATION)
 
 end

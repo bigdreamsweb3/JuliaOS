@@ -13,9 +13,10 @@ function strategy_blog_writer(
         return ctx
     end
 
-    title = input["title"]
-    tone = input["tone"]
-    length = input["length"]
+    title = get(input, "title", nothing)
+    tone = get(input, "tone", nothing)
+    max_characters_amount = get(input, "max_characters_amount", nothing)
+    output_format = get(input, "output_format", nothing)
 
     detect_index = findfirst(tool -> tool.metadata.name == "write_blog", ctx.tools)
     if detect_index === nothing
@@ -24,15 +25,37 @@ function strategy_blog_writer(
     end
     blog_writer_tool = ctx.tools[detect_index]
     
-    push!(ctx.logs, "Writing blog post with:\ntitle: $title \ntone: $tone \nlength: $length")
+    push!(ctx.logs, "Writing blog post with:\ntitle: $title \ntone: $tone \nmax characters amount: $max_characters_amount \noutput format: $output_format")
+    post_generation_result = nothing
     try
-        result = blog_writer_tool.execute(blog_writer_tool.config, input)
+        post_generation_result = blog_writer_tool.execute(blog_writer_tool.config, input)
         push!(ctx.logs, "Blog post '$title' written successfully.")
-        push!(ctx.logs, "Blog content: \n$(result["output"])")
+        push!(ctx.logs, "Blog content: \n$(post_generation_result["output"])")
     catch e
-        push!(ctx.logs, "ERROR: Blog writing failed: $e")
+        push!(ctx.logs, "ERROR: Blog writing failed: $(post_generation_result["error"])")
         return ctx
     end    
+
+    post_index = findfirst(t -> t.metadata.name == "post_to_x", ctx.tools)
+    if post_index === nothing
+        push!(ctx.logs, "post_to_x tool not found — skipping post.")
+        return ctx
+    end
+    post_tool = ctx.tools[post_index]
+
+    push!(ctx.logs, "Posting to X...")
+    try
+        result = post_tool.execute(post_tool.config, Dict("blog_text" => post_generation_result["output"]))
+        if result["success"]
+            push!(ctx.logs, "Posted to X successfully.")
+        else
+            push!(ctx.logs, "ERROR: Failed to post to X: $(result["error"])")
+        end
+    catch e
+        push!(ctx.logs, "ERROR: Exception during X post: $e")
+    end
+
+    return ctx
 end
 
 const STRATEGY_BLOG_WRITER_SPECIFICATION = StrategySpecification(
