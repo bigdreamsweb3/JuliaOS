@@ -57,6 +57,14 @@ function update_agent(req::HTTP.Request, agent_id::String, agent_update::AgentUp
     return AgentSummary(agent.id, Agents.agent_state_to_string(agent.state))
 end
 
+function get_agent(req::HTTP.Request, agent_id::String;)::AgentSummary
+    @info "Triggered endpoint: GET /agents/$(agent_id)"
+    agent = get(Agents.AGENTS, agent_id) do
+        error("Agent $(agent_id) does not exist!")
+    end
+    return AgentSummary(agent.id, Agents.agent_state_to_string(agent.state))
+end
+
 function list_agents(req::HTTP.Request;)::Vector{AgentSummary}
     @info "Triggered endpoint: GET /agents"
     agents = Vector{AgentSummary}()
@@ -111,17 +119,17 @@ function list_tools(req::HTTP.Request;)::Vector{ToolSummary}
     @info "Triggered endpoint: GET /tools"
     tools = Vector{ToolSummary}()
     for (name, tool) in Agents.Tools.TOOL_REGISTRY
-        push!(tools, ToolSummary(name, tool.metadata.description))
+        push!(tools, ToolSummary(name, ToolSummaryMetadata(tool.metadata.description)))
     end
     return tools
 end
 
-function run_server(port=8052)
+function run_server(host::AbstractString="0.0.0.0", port::Integer=8052)
     try
         router = HTTP.Router()
         router = JuliaOSServer.register(router, @__MODULE__; path_prefix="/api/v1")
         HTTP.register!(router, "GET", "/ping", ping)
-        server[] = HTTP.serve!(router, port)
+        server[] = HTTP.serve!(router, host, port)
         wait(server[])
     catch ex
         @error("Server error", exception=(ex, catch_backtrace()))

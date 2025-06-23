@@ -2,7 +2,7 @@
 
 *joo-LEE-uh-oh-ESS* /ˈdʒuː.li.ə.oʊ.ɛs/
 
-**Noun**
+**Noun:**
 **A powerful multi-chain, community-driven framework for AI and Swarm technological innovation, powered by Julia.**
 
 Translations:

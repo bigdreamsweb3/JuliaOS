@@ -57,6 +57,34 @@ function delete_agent_invoke(impl; post_invoke=nothing)
     end
 end
 
+function get_agent_read(handler)
+    function get_agent_read_handler(req::HTTP.Request)
+        openapi_params = Dict{String,Any}()
+        path_params = HTTP.getparams(req)
+        openapi_params["agent_id"] = OpenAPI.Servers.to_param(String, path_params, "agent_id", required=true, )
+        req.context[:openapi_params] = openapi_params
+
+        return handler(req)
+    end
+end
+
+function get_agent_validate(handler)
+    function get_agent_validate_handler(req::HTTP.Request)
+        openapi_params = req.context[:openapi_params]
+        
+        return handler(req)
+    end
+end
+
+function get_agent_invoke(impl; post_invoke=nothing)
+    function get_agent_invoke_handler(req::HTTP.Request)
+        openapi_params = req.context[:openapi_params]
+        ret = impl.get_agent(req::HTTP.Request, openapi_params["agent_id"];)
+        resp = OpenAPI.Servers.server_response(ret)
+        return (post_invoke === nothing) ? resp : post_invoke(req, resp)
+    end
+end
+
 function get_agent_logs_read(handler)
     function get_agent_logs_read_handler(req::HTTP.Request)
         openapi_params = Dict{String,Any}()
@@ -253,6 +281,7 @@ end
 function registerDefaultApi(router::HTTP.Router, impl; path_prefix::String="", optional_middlewares...)
     HTTP.register!(router, "POST", path_prefix * "/agents", OpenAPI.Servers.middleware(impl, create_agent_read, create_agent_validate, create_agent_invoke; optional_middlewares...))
     HTTP.register!(router, "DELETE", path_prefix * "/agents/{agent_id}", OpenAPI.Servers.middleware(impl, delete_agent_read, delete_agent_validate, delete_agent_invoke; optional_middlewares...))
+    HTTP.register!(router, "GET", path_prefix * "/agents/{agent_id}", OpenAPI.Servers.middleware(impl, get_agent_read, get_agent_validate, get_agent_invoke; optional_middlewares...))
     HTTP.register!(router, "GET", path_prefix * "/agents/{agent_id}/logs", OpenAPI.Servers.middleware(impl, get_agent_logs_read, get_agent_logs_validate, get_agent_logs_invoke; optional_middlewares...))
     HTTP.register!(router, "GET", path_prefix * "/agents/{agent_id}/output", OpenAPI.Servers.middleware(impl, get_agent_output_read, get_agent_output_validate, get_agent_output_invoke; optional_middlewares...))
     HTTP.register!(router, "GET", path_prefix * "/agents", OpenAPI.Servers.middleware(impl, list_agents_read, list_agents_validate, list_agents_invoke; optional_middlewares...))

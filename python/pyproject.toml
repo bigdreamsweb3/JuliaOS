@@ -1,0 +1,22 @@
+[project]
+name = "juliaos"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+
+  # Dependencies for generated code:
+
+  "urllib3>=1.25.3",
+  "python-dateutil>=2.8.2",
+  "pydantic>=1.10.5,<2",
+  "aenum>=3.1.11"
+  
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["juliaos", "_juliaos_client_api"]

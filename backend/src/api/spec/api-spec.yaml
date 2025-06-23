@@ -42,7 +42,7 @@ paths:
                 - id
                 - blueprint
       responses:
-        '201':
+        '200':
           description: Agent created successfully
           content:
             application/json:
@@ -50,6 +50,26 @@ paths:
                 $ref: '#/components/schemas/AgentSummary'
   
   /agents/{agent_id}:
+    get:
+      operationId: getAgent
+      summary: Get a specific agent
+      description: Retrieve the details of a specific agent by ID
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          description: The ID of the agent to retrieve
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSummary'
+        '404':
+          description: Agent not found
     put:
       operationId: updateAgent
       summary: Update a specific agent

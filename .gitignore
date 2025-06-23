@@ -187,7 +187,13 @@ $RECYCLE.BIN/
 # pnpm-lock.yaml
 
 # Python specific
+__pycache__/
 venv/
+python/venv/
+python/src/juliaos.egg-info
+
+# Non-source code files generated for Python from OpenAPI spec
+temp-generated/
 
 # Generated Files
 *.tsbuildinfo
