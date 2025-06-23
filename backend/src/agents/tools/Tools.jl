@@ -3,9 +3,11 @@ module Tools
 export TOOL_REGISTRY
 
 include("tool_example_adder.jl")
-include("tool_example_telegram.jl")
 include("tool_ping.jl")
 include("tool_llm_chat.jl")
+include("telegram/tool_ban_user.jl")
+include("telegram/tool_detect_swearing.jl")
+include("telegram/tool_send_message.jl")
 
 using ..CommonTypes: ToolSpecification
 
@@ -21,9 +23,10 @@ end
 # All tools to be used by agents must be registered here:
 
 register_tool("adder", TOOL_EXAMPLE_ADDER_SPECIFICATION)
-register_tool("detect_swearing", TOOL_DETECT_SWEAR_SPECIFICATION)
-register_tool("ban_user", TOOL_BAN_USER_SPECIFICATION)
-register_tool("ping", TOOL_PING_SPECIFICATION)
 register_tool("llm_chat", TOOL_LLM_CHAT_SPECIFICATION)
+register_tool("ping", TOOL_PING_SPECIFICATION)
+register_tool("ban_user", TOOL_BAN_USER_SPECIFICATION)
+register_tool("detect_swearing", TOOL_DETECT_SWEAR_SPECIFICATION)
+register_tool("send_message", TOOL_SEND_MESSAGE_SPECIFICATION)
 
 end
