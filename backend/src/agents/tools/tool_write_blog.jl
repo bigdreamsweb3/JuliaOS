@@ -16,6 +16,7 @@ Base.@kwdef struct ToolBlogWriterConfig <: ToolConfig
 end
 
 const ALLOWED_FORMATS = Set(["plain", "markdown", "html"])
+MAX_ATTEMPTS = 3
 
 """
     tool_write_blog(cfg::ToolBlogWriterConfig, task::Dict) -> Dict{String, Any}
@@ -61,15 +62,22 @@ function tool_write_blog(cfg::ToolBlogWriterConfig, task::Dict)
         max_output_tokens = cfg.max_output_tokens
     )
 
-    try
-        answer = Gemini.gemini_util(
-            gemini_cfg, 
-            prompt
-        )
-        return Dict("output" => answer, "success" => true)
-    catch e
-        return Dict("success" => false, "error" => string(e))
+    for _ in 1:MAX_ATTEMPTS
+        try
+            answer = Gemini.gemini_util(gemini_cfg, prompt)
+
+            if length(answer) ≤ max_characters_amount
+                return Dict("output" => answer, "success" => true)
+            end
+
+        catch e
+            return Dict("success" => false, "error" => string(e))
+        end
     end
+
+    return Dict(
+        "success" => false, "error" => "Failed to generate a blog post within $(max_characters_amount) characters after $MAX_ATTEMPTS attempts."
+    )
 end
 
 const TOOL_BLOG_WRITER_METADATA = ToolMetadata(
