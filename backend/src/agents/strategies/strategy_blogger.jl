@@ -18,12 +18,12 @@ function strategy_blogger(
     max_characters_amount = get(input, "max_characters_amount", nothing)
     output_format = get(input, "output_format", nothing)
 
-    detect_index = findfirst(tool -> tool.metadata.name == "write_blog", ctx.tools)
-    if detect_index === nothing
+    write_blog_index  = findfirst(tool -> tool.metadata.name == "write_blog", ctx.tools)
+    if write_blog_index === nothing
         push!(ctx.logs, "ERROR: write_blog tool not found.")
         return ctx
     end
-    blog_writer_tool = ctx.tools[detect_index]
+    blog_writer_tool = ctx.tools[write_blog_index]
     
     push!(ctx.logs, "Writing blog post with:\ntitle: $title \ntone: $tone \nmax characters amount: $max_characters_amount \noutput format: $output_format")
     post_generation_result = nothing
@@ -36,12 +36,12 @@ function strategy_blogger(
         return ctx
     end    
 
-    post_index = findfirst(t -> t.metadata.name == "post_to_x", ctx.tools)
-    if post_index === nothing
+    post_to_x_index = findfirst(t -> t.metadata.name == "post_to_x", ctx.tools)
+    if post_to_x_index === nothing
         push!(ctx.logs, "post_to_x tool not found — skipping post.")
         return ctx
     end
-    post_tool = ctx.tools[post_index]
+    post_tool = ctx.tools[post_to_x_index]
 
     push!(ctx.logs, "Posting to X...")
     try
