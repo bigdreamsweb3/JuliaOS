@@ -26,14 +26,11 @@ end
 
 register_tool("adder", TOOL_EXAMPLE_ADDER_SPECIFICATION)
 register_tool("llm_chat", TOOL_LLM_CHAT_SPECIFICATION)
-<<<<<<< HEAD
 register_tool("write_blog", TOOL_BLOG_WRITER_SPECIFICATION)
 register_tool("post_to_x", TOOL_POST_TO_X_SPECIFICATION)
-=======
 register_tool("ping", TOOL_PING_SPECIFICATION)
 register_tool("ban_user", TOOL_BAN_USER_SPECIFICATION)
 register_tool("detect_swearing", TOOL_DETECT_SWEAR_SPECIFICATION)
 register_tool("send_message", TOOL_SEND_MESSAGE_SPECIFICATION)
->>>>>>> origin/main
 
 end
