@@ -4,6 +4,8 @@ const AGENTS = Dict{String, Agent}()
 
 function create_agent(
     id::String,
+    name::String,
+    description::String,
     blueprint::AgentBlueprint,
 )::Agent
     # Check if the agent with the given ID already exists
@@ -30,6 +32,8 @@ function create_agent(
     # Create the agent
     agent = Agent(
         id,
+        name,
+        description,
         context,
         strategy,
         blueprint.trigger,

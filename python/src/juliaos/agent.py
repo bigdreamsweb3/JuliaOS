@@ -6,9 +6,11 @@ from juliaos.enums import AgentState
 
 class Agent:
     @classmethod
-    def create(cls, conn: JuliaOSConnection, blueprint: AgentBlueprint, _id: str) -> Self | None:
+    def create(cls, conn: JuliaOSConnection, blueprint: AgentBlueprint, _id: str, name: str, description: str) -> Self | None:
         api_response = conn.api.create_agent(CreateAgentRequest(
             id=_id,
+            name=name,
+            description=description,
             blueprint=blueprint
         ))
         if api_response is None:

@@ -1,4 +1,4 @@
-using .CommonTypes: InstantiatedTool, InstantiatedStrategy, StrategyBlueprint, ToolBlueprint, AgentState
+using .CommonTypes: InstantiatedTool, InstantiatedStrategy, StrategyBlueprint, ToolBlueprint, AgentState, TriggerType
 
 function deserialize_object(object_type::DataType, data::Dict{String, Any})
     expected_fields = fieldnames(object_type)
@@ -62,5 +62,16 @@ const NAME_TO_AGENT_STATE = Dict(v => k for (k, v) in AGENT_STATE_NAMES)
 function string_to_agent_state(name::String)::AgentState
     return get(NAME_TO_AGENT_STATE, name) do
         error("Invalid AgentState name: $name")
+    end
+end
+
+const TRIGGER_TYPE_NAMES = Dict(
+    CommonTypes.PERIODIC_TRIGGER => "PERIODIC",
+    CommonTypes.WEBHOOK_TRIGGER => "WEBHOOK",
+)
+
+function trigger_type_to_string(trigger::TriggerType)::String
+    return get(TRIGGER_TYPE_NAMES, trigger) do
+        error("Unknown TriggerType: $trigger")
     end
 end

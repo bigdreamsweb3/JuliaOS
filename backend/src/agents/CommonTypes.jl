@@ -86,6 +86,8 @@ end
 
 mutable struct Agent
     id::String
+    name::String
+    description::String
     context::AgentContext
     strategy::InstantiatedStrategy
     trigger::TriggerConfig

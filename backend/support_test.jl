@@ -37,7 +37,7 @@ function main()
         TriggerConfig(Agents.CommonTypes.WEBHOOK_TRIGGER, WebhookTriggerParams())
     )
 
-    support_agent = Agents.create_agent("support_agent", support_blueprint)
+    support_agent = Agents.create_agent("support_agent", "Telegram Support Agent", "Responds to user messages", support_blueprint)
     @info "Created support agent: $support_agent"
 
     @info "Existing agents:"

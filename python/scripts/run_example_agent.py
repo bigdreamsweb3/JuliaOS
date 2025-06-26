@@ -1,6 +1,6 @@
 import juliaos
 
-HOST = "http://localhost:8052/api/v1"
+HOST = "http://127.0.0.1:8052/api/v1"
 
 AGENT_BLUEPRINT = juliaos.AgentBlueprint(
     tools=[
@@ -24,6 +24,8 @@ AGENT_BLUEPRINT = juliaos.AgentBlueprint(
 )
 
 AGENT_ID = "test-agent"
+AGENT_NAME = "Example Agent"
+AGENT_DESCRIPTION = "Adds the number multiple times"
 
 with juliaos.JuliaOSConnection(HOST) as conn:
     print_agents = lambda: print("Agents:", conn.list_agents())
@@ -34,7 +36,7 @@ with juliaos.JuliaOSConnection(HOST) as conn:
             print("   ", log)
 
     print_agents()
-    agent = juliaos.Agent.create(conn, AGENT_BLUEPRINT, AGENT_ID)
+    agent = juliaos.Agent.create(conn, AGENT_BLUEPRINT, AGENT_ID, AGENT_NAME, AGENT_DESCRIPTION)
     print_agents()
     agent.set_state(juliaos.AgentState.RUNNING)
     print_agents()

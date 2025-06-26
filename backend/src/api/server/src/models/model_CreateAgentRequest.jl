@@ -6,28 +6,38 @@
 
     CreateAgentRequest(;
         id=nothing,
+        name=nothing,
+        description=nothing,
         blueprint=nothing,
     )
 
     - id::String : Unique identifier for the agent
+    - name::String : Human-readable name of the agent
+    - description::String : Short summary of what the agent does
     - blueprint::AgentBlueprint
 """
 Base.@kwdef mutable struct CreateAgentRequest <: OpenAPI.APIModel
     id::Union{Nothing, String} = nothing
+    name::Union{Nothing, String} = nothing
+    description::Union{Nothing, String} = nothing
     blueprint = nothing # spec type: Union{ Nothing, AgentBlueprint }
 
-    function CreateAgentRequest(id, blueprint, )
+    function CreateAgentRequest(id, name, description, blueprint, )
         OpenAPI.validate_property(CreateAgentRequest, Symbol("id"), id)
+        OpenAPI.validate_property(CreateAgentRequest, Symbol("name"), name)
+        OpenAPI.validate_property(CreateAgentRequest, Symbol("description"), description)
         OpenAPI.validate_property(CreateAgentRequest, Symbol("blueprint"), blueprint)
-        return new(id, blueprint, )
+        return new(id, name, description, blueprint, )
     end
 end # type CreateAgentRequest
 
-const _property_types_CreateAgentRequest = Dict{Symbol,String}(Symbol("id")=>"String", Symbol("blueprint")=>"AgentBlueprint", )
+const _property_types_CreateAgentRequest = Dict{Symbol,String}(Symbol("id")=>"String", Symbol("name")=>"String", Symbol("description")=>"String", Symbol("blueprint")=>"AgentBlueprint", )
 OpenAPI.property_type(::Type{ CreateAgentRequest }, name::Symbol) = Union{Nothing,eval(Base.Meta.parse(_property_types_CreateAgentRequest[name]))}
 
 function check_required(o::CreateAgentRequest)
     o.id === nothing && (return false)
+    o.name === nothing && (return false)
+    o.description === nothing && (return false)
     o.blueprint === nothing && (return false)
     true
 end
