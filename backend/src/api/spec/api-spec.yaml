@@ -36,10 +36,20 @@ paths:
                 id:
                   type: string
                   description: Unique identifier for the agent
+                name:
+                  type: string
+                  description: Human-readable name of the agent
+                  example: "Email Triage Bot"
+                description:
+                  type: string
+                  description: Short summary of what the agent does
+                  example: "Automatically processes and routes incoming support emails."
                 blueprint:
                   $ref: '#/components/schemas/AgentBlueprint'
               required:
                 - id
+                - name
+                - description
                 - blueprint
       responses:
         '200':
@@ -223,15 +233,30 @@ components:
         id:
           type: string
           example: "agent123"
+        name:
+          type: string
+          example: "My First Agent"
+          description: Human-readable name of the agent
+        description:
+          type: string
+          description: Brief summary of what the agent does
+          example: "Automatically triages incoming customer-support emails and escalates when necessary."
         state:
           type: string
           enum: ["CREATED", "RUNNING", "PAUSED", "STOPPED"]
           example: "RUNNING"
           description: The current state of the agent
+        trigger_type:
+          type: string
+          enum: ["PERIODIC", "WEBHOOK"]
+          example: "PERIODIC"
+          description: Specifies how the agent is activated
       required:
         - id
         - name
-        - state  
+        - description
+        - state
+        - trigger_type
 
     AgentBlueprint:
       type: object
@@ -293,7 +318,7 @@ components:
       properties:
         type:
           type: string
-          enum: ["webhook"]
+          enum: ["webhook", "periodic"]
         params:
           type: object
           additionalProperties: true

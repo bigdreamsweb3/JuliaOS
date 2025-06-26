@@ -26,7 +26,7 @@ function main()
         TriggerConfig(Agents.CommonTypes.WEBHOOK_TRIGGER, WebhookTriggerParams())
     )
     
-    plan_execute_agent = Agents.create_agent("plan_execute_agent", plan_execute_blueprint)
+    plan_execute_agent = Agents.create_agent("plan_execute_agent", "Plan and Execute Agent", "Agent with reasoning capabilities", plan_execute_blueprint)
     @info "Created reasoning agent: $plan_execute_agent"
 
     @info "Existing agents:"

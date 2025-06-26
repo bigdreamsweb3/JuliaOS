@@ -19,6 +19,8 @@ function create_agent(req::HTTP.Request, create_agent_request::CreateAgentReques
     @info "Triggered endpoint: POST /agents"
 
     id = create_agent_request.id
+    name = create_agent_request.name
+    description = create_agent_request.description
     received_blueprint = create_agent_request.blueprint
 
     tools = Vector{Agents.ToolBlueprint}()
@@ -35,9 +37,9 @@ function create_agent(req::HTTP.Request, create_agent_request::CreateAgentReques
         Agents.CommonTypes.TriggerConfig(trigger_type, trigger_params)
     )
 
-    agent = Agents.create_agent(id, internal_blueprint)
+    agent = Agents.create_agent(id, name, description, internal_blueprint)
     @info "Created agent: $(agent.id) with state: $(agent.state)"
-    return AgentSummary(agent.id, Agents.agent_state_to_string(agent.state))
+    return AgentSummary(agent.id, agent.name, agent.description, Agents.agent_state_to_string(agent.state), Agents.trigger_type_to_string(agent.trigger.type))
 end
 
 function delete_agent(req::HTTP.Request, agent_id::String;)::Nothing
@@ -54,7 +56,7 @@ function update_agent(req::HTTP.Request, agent_id::String, agent_update::AgentUp
     end
     new_state = Agents.string_to_agent_state(agent_update.state)
     Agents.set_agent_state(agent, new_state)
-    return AgentSummary(agent.id, Agents.agent_state_to_string(agent.state))
+    return AgentSummary(agent.id, agent.name, agent.description, Agents.agent_state_to_string(agent.state), Agents.trigger_type_to_string(agent.trigger.type))
 end
 
 function get_agent(req::HTTP.Request, agent_id::String;)::AgentSummary
@@ -62,14 +64,14 @@ function get_agent(req::HTTP.Request, agent_id::String;)::AgentSummary
     agent = get(Agents.AGENTS, agent_id) do
         error("Agent $(agent_id) does not exist!")
     end
-    return AgentSummary(agent.id, Agents.agent_state_to_string(agent.state))
+    return AgentSummary(agent.id, agent.name, agent.description, Agents.agent_state_to_string(agent.state), Agents.trigger_type_to_string(agent.trigger.type))
 end
 
 function list_agents(req::HTTP.Request;)::Vector{AgentSummary}
     @info "Triggered endpoint: GET /agents"
     agents = Vector{AgentSummary}()
     for (id, agent) in Agents.AGENTS
-        push!(agents, AgentSummary(id, Agents.agent_state_to_string(agent.state)))
+        push!(agents, AgentSummary(id, agent.name, agent.description, Agents.agent_state_to_string(agent.state), Agents.trigger_type_to_string(agent.trigger.type)))
     end
     return agents
 end

@@ -28,7 +28,7 @@ function main()
         )
     )
 
-    example_agent = Agents.create_agent("example_agent", example_blueprint)
+    example_agent = Agents.create_agent("example_agent", "Example Agent", "Adds 2", example_blueprint)
     @info "Created agent: $example_agent"
 
     @info "Exising agents:"

@@ -27,8 +27,10 @@ class CreateAgentRequest(BaseModel):
     CreateAgentRequest
     """
     id: StrictStr = Field(default=..., description="Unique identifier for the agent")
+    name: StrictStr = Field(default=..., description="Human-readable name of the agent")
+    description: StrictStr = Field(default=..., description="Short summary of what the agent does")
     blueprint: AgentBlueprint = Field(...)
-    __properties = ["id", "blueprint"]
+    __properties = ["id", "name", "description", "blueprint"]
 
     class Config:
         """Pydantic configuration"""
@@ -70,6 +72,8 @@ class CreateAgentRequest(BaseModel):
 
         _obj = CreateAgentRequest.parse_obj({
             "id": obj.get("id"),
+            "name": obj.get("name"),
+            "description": obj.get("description"),
             "blueprint": AgentBlueprint.from_dict(obj.get("blueprint")) if obj.get("blueprint") is not None else None
         })
         return _obj
