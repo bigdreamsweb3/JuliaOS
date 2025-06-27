@@ -1,8 +1,16 @@
+using DotEnv
+DotEnv.load!()
+
 using Pkg
 Pkg.activate(".")
 
 using JuliaOSBackend.Agents
 using JuliaOSBackend.Agents.CommonTypes: AgentBlueprint, ToolBlueprint, StrategyBlueprint, TriggerConfig, WebhookTriggerParams
+
+X_API_KEY = ENV["X_API_KEY"]
+X_API_KEY_SECRET = ENV["X_API_KEY_SECRET"]
+X_ACCESS_TOKEN = ENV["X_ACCESS_TOKEN"]
+X_ACCESS_TOKEN_SECRET = ENV["X_ACCESS_TOKEN_SECRET"]
 
 function main()
     @info "Supported tools:"
@@ -18,6 +26,12 @@ function main()
     tool_blueprints = [
         ToolBlueprint("scrape_article_text", Dict()),
         ToolBlueprint("summarize_for_post", Dict()),
+        ToolBlueprint("post_to_x", Dict(
+        "api_key" => X_API_KEY,
+        "api_key_secret" => X_API_KEY_SECRET,
+        "access_token" => X_ACCESS_TOKEN,
+        "access_token_secret" => X_ACCESS_TOKEN_SECRET
+        )),
     ]
 
     strategy_config = Dict(

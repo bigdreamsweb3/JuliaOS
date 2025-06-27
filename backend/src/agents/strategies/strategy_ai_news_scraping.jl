@@ -39,11 +39,15 @@ end
 function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentContext, input::Dict{String,Any})::AgentContext
     scrape_index = findfirst(t -> t.metadata.name == "scrape_article_text", ctx.tools)
     summarize_index = findfirst(t -> t.metadata.name == "summarize_for_post", ctx.tools)
+    post_to_x_index = findfirst(t -> t.metadata.name == "post_to_x", ctx.tools)
 
-    if scrape_index === nothing || summarize_index === nothing
+    if scrape_index === nothing || summarize_index === nothing || post_to_x_index === nothing
         push!(ctx.logs, "Missing required tool(s)")
         return ctx
     end
+    scrape_tool = ctx.tools[scrape_index]
+    summarize_tool = ctx.tools[summarize_index]
+    post_tool = ctx.tools[post_to_x_index]
 
     portal_html = ""
     try
@@ -60,7 +64,7 @@ function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentCon
         return ctx
     end
 
-    article_result = ctx.tools[scrape_index].execute(ctx.tools[scrape_index].config, Dict("url" => article_url))
+    article_result = scrape_tool.execute(scrape_tool.config, Dict("url" => article_url))
     if !get(article_result, "success", false)
         push!(ctx.logs, "Failed to scrape article: $article_url")
         return ctx
@@ -68,7 +72,7 @@ function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentCon
 
     article_text = article_result["text"]
 
-    summarize_result = ctx.tools[summarize_index].execute(ctx.tools[summarize_index].config, Dict(
+    summarize_result = summarize_tool.execute(summarize_tool.config, Dict(
         "text" => article_text,
         "url" => article_url
     ))
@@ -78,8 +82,20 @@ function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentCon
         return ctx
     end
 
-    tweet = summarize_result["post_text"]
+    tweet = String(summarize_result["post_text"])
     @info "Generated tweet: $tweet"
+
+    push!(ctx.logs, "Posting to X...")
+    try
+        result = post_tool.execute(post_tool.config, Dict("blog_text" => tweet))
+        if result["success"]
+            push!(ctx.logs, "Posted to X successfully.")
+        else
+            push!(ctx.logs, "ERROR: Failed to post to X: $(result["error"])")
+        end
+    catch e
+        push!(ctx.logs, "ERROR: Exception during X post: $e")
+    end
 
     return ctx
 end
