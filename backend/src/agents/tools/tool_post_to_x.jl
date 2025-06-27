@@ -1,11 +1,18 @@
 using ..CommonTypes: ToolSpecification, ToolMetadata, ToolConfig
-using PyCall
+using PyCall, Conda
 
 
 const tweepy = Ref{PyObject}()
 
 function __init__()
-    tweepy[] = pyimport("tweepy")
+    try
+        tweepy[] = pyimport("tweepy")
+    catch e
+        @warn "tweepy not found, attempting installation via Conda.pip" exception = e
+        Conda.pip_interop(true)
+        Conda.pip("install", "tweepy==4.15.0")
+        tweepy[] = pyimport("tweepy")
+    end
 end
 
 Base.@kwdef struct ToolPostToXConfig <: ToolConfig
