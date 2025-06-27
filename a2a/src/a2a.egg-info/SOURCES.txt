@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/a2a/server.py
+src/a2a.egg-info/PKG-INFO
+src/a2a.egg-info/SOURCES.txt
+src/a2a.egg-info/dependency_links.txt
+src/a2a.egg-info/requires.txt
+src/a2a.egg-info/top_level.txt
