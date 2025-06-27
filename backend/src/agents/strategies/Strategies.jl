@@ -6,6 +6,7 @@ include("strategy_example_adder.jl")
 include("strategy_plan_and_execute.jl")
 include("telegram/strategy_moderator.jl")
 include("telegram/strategy_support.jl")
+include("strategy_ai_news_scraping.jl")
 
 using ..CommonTypes: StrategySpecification
 
@@ -24,5 +25,6 @@ register_strategy("adder", STRATEGY_EXAMPLE_ADDER_SPECIFICATION)
 register_strategy("plan_execute", STRATEGY_PLAN_AND_EXECUTE_SPECIFICATION)
 register_strategy("telegram_moderator", STRATEGY_TELEGRAM_MODERATOR_SPECIFICATION)
 register_strategy("support", STRATEGY_SUPPORT_SPECIFICATION)
+register_strategy("ai_news_scraping", STRATEGY_AI_NEWS_SCRAPING_SPECIFICATION)
 
 end
