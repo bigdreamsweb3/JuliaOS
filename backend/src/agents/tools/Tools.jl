@@ -5,6 +5,8 @@ export TOOL_REGISTRY
 include("tool_example_adder.jl")
 include("tool_ping.jl")
 include("tool_llm_chat.jl")
+include("tool_write_blog.jl")
+include("tool_post_to_x.jl")
 include("telegram/tool_ban_user.jl")
 include("telegram/tool_detect_swearing.jl")
 include("telegram/tool_send_message.jl")
@@ -26,6 +28,8 @@ end
 
 register_tool("adder", TOOL_EXAMPLE_ADDER_SPECIFICATION)
 register_tool("llm_chat", TOOL_LLM_CHAT_SPECIFICATION)
+register_tool("write_blog", TOOL_BLOG_WRITER_SPECIFICATION)
+register_tool("post_to_x", TOOL_POST_TO_X_SPECIFICATION)
 register_tool("ping", TOOL_PING_SPECIFICATION)
 register_tool("ban_user", TOOL_BAN_USER_SPECIFICATION)
 register_tool("detect_swearing", TOOL_DETECT_SWEAR_SPECIFICATION)

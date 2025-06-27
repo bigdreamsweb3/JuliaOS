@@ -32,8 +32,8 @@ class TriggerConfig(BaseModel):
     @validator('type')
     def type_validate_enum(cls, value):
         """Validates the enum"""
-        if value not in ('webhook'):
-            raise ValueError("must be one of enum values ('webhook')")
+        if value not in ('webhook', 'periodic'):
+            raise ValueError("must be one of enum values ('webhook', 'periodic')")
         return value
 
     class Config:

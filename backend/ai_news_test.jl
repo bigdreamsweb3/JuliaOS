@@ -32,7 +32,7 @@ function main()
         TriggerConfig(Agents.CommonTypes.WEBHOOK_TRIGGER, WebhookTriggerParams())
     )
 
-    ai_news_agent = Agents.create_agent("ai_news_agent", ai_news_agent_blueprint)
+    ai_news_agent = Agents.create_agent("ai_news_agent", "AI News Agent", "Scrapes news article and posts a tweet based on it", ai_news_agent_blueprint)
     @info "Created AI news agent: $ai_news_agent"
 
     Agents.set_agent_state(ai_news_agent, Agents.CommonTypes.RUNNING_STATE)

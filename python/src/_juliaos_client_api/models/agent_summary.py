@@ -26,14 +26,24 @@ class AgentSummary(BaseModel):
     AgentSummary
     """
     id: StrictStr = Field(...)
+    name: StrictStr = Field(default=..., description="Human-readable name of the agent")
+    description: StrictStr = Field(default=..., description="Brief summary of what the agent does")
     state: StrictStr = Field(default=..., description="The current state of the agent")
-    __properties = ["id", "state"]
+    trigger_type: StrictStr = Field(default=..., description="Specifies how the agent is activated")
+    __properties = ["id", "name", "description", "state", "trigger_type"]
 
     @validator('state')
     def state_validate_enum(cls, value):
         """Validates the enum"""
         if value not in ('CREATED', 'RUNNING', 'PAUSED', 'STOPPED'):
             raise ValueError("must be one of enum values ('CREATED', 'RUNNING', 'PAUSED', 'STOPPED')")
+        return value
+
+    @validator('trigger_type')
+    def trigger_type_validate_enum(cls, value):
+        """Validates the enum"""
+        if value not in ('PERIODIC', 'WEBHOOK'):
+            raise ValueError("must be one of enum values ('PERIODIC', 'WEBHOOK')")
         return value
 
     class Config:
@@ -73,7 +83,10 @@ class AgentSummary(BaseModel):
 
         _obj = AgentSummary.parse_obj({
             "id": obj.get("id"),
-            "state": obj.get("state")
+            "name": obj.get("name"),
+            "description": obj.get("description"),
+            "state": obj.get("state"),
+            "trigger_type": obj.get("trigger_type")
         })
         return _obj
 

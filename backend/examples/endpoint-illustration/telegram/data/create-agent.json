@@ -1,5 +1,7 @@
 {
 	"id": "telegram-agent",
+	"name": "Telegram Moderator Agent",
+	"description": "Checks for profanity and bans users",
 	"blueprint": {
 		"tools": [
 			{

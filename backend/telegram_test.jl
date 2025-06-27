@@ -42,7 +42,7 @@ function main()
         TriggerConfig(Agents.CommonTypes.WEBHOOK_TRIGGER, WebhookTriggerParams())
     )
 
-    moderator_agent = Agents.create_agent("telegram_moderator_agent", moderator_blueprint)
+    moderator_agent = Agents.create_agent("telegram_moderator_agent", "Telegram Moderator Agent", "Checks for profanity and bans users", moderator_blueprint)
     @info "Created moderator agent: $moderator_agent"
 
     @info "Existing agents:"

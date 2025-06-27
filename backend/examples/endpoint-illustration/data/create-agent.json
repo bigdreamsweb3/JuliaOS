@@ -1,5 +1,7 @@
 {
 	"id": "example-agent",
+	"name": "Example Agent",
+	"description": "Adds a number multiple times",
 	"blueprint": {
 		"tools": [
 			{
