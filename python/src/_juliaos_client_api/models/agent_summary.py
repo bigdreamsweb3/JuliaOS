@@ -18,7 +18,7 @@ import re  # noqa: F401
 import json
 
 
-
+from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field, StrictStr, validator
 
 class AgentSummary(BaseModel):
@@ -30,7 +30,8 @@ class AgentSummary(BaseModel):
     description: StrictStr = Field(default=..., description="Brief summary of what the agent does")
     state: StrictStr = Field(default=..., description="The current state of the agent")
     trigger_type: StrictStr = Field(default=..., description="Specifies how the agent is activated")
-    __properties = ["id", "name", "description", "state", "trigger_type"]
+    input_schema: Optional[Dict[str, Any]] = Field(default=None, description="Draft-07 JSON-Schema describing the structure the agent expects as input when its `run` endpoint is invoked. Omitted when the agent declares no input type. ")
+    __properties = ["id", "name", "description", "state", "trigger_type", "input_schema"]
 
     @validator('state')
     def state_validate_enum(cls, value):
@@ -86,7 +87,8 @@ class AgentSummary(BaseModel):
             "name": obj.get("name"),
             "description": obj.get("description"),
             "state": obj.get("state"),
-            "trigger_type": obj.get("trigger_type")
+            "trigger_type": obj.get("trigger_type"),
+            "input_schema": obj.get("input_schema")
         })
         return _obj
 
