@@ -251,6 +251,18 @@ components:
           enum: ["PERIODIC", "WEBHOOK"]
           example: "PERIODIC"
           description: Specifies how the agent is activated
+        input_schema:
+          type: object
+          description: >
+            Draft-07 JSON-Schema describing the structure the agent expects as
+            input when its `run` endpoint is invoked. Omitted when the agent
+            declares no input type.
+          example:
+            type: object
+            properties:
+              value:
+                type: integer
+            required: ["value"]
       required:
         - id
         - name

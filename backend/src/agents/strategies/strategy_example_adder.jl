@@ -1,9 +1,13 @@
 # Example implementation of a strategy. The STRATEGY_EXAMPLE_ADDER_SPECIFICATION struct encapsulates the implementation and is the part added to the registry in Strategy.jl.
 
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyInput
 
 Base.@kwdef struct StrategyExampleAdderConfig <: StrategyConfig
     times_to_add::Int
+end
+
+Base.@kwdef struct AddNumberInput <: StrategyInput
+    value::Int
 end
 
 function strategy_example_adder_initialization(cfg::StrategyExampleAdderConfig, ctx::AgentContext)
@@ -21,13 +25,8 @@ function strategy_example_adder_initialization(cfg::StrategyExampleAdderConfig, 
     end
 end
 
-function strategy_example_adder(cfg::StrategyExampleAdderConfig, ctx::AgentContext, input::Any)
-    if !isa(input, Dict) || !haskey(input, "value") || !isa(input["value"], Int)
-        push!(ctx.logs, "ERROR: Input must be a Dict with an integer \"value\" field.")
-        return
-    end
-
-    value = input["value"]
+function strategy_example_adder(cfg::StrategyExampleAdderConfig, ctx::AgentContext, input::AddNumberInput)
+    value = input.value
 
     adder_tool_index = findfirst(tool -> tool.metadata.name == "adder", ctx.tools)
     if adder_tool_index === nothing
@@ -45,5 +44,6 @@ end
 const STRATEGY_EXAMPLE_ADDER_SPECIFICATION = StrategySpecification(
     strategy_example_adder,
     strategy_example_adder_initialization,
-    StrategyExampleAdderConfig
+    StrategyExampleAdderConfig,
+    AddNumberInput
 )

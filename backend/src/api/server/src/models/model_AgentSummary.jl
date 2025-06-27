@@ -10,6 +10,7 @@
         description=nothing,
         state=nothing,
         trigger_type=nothing,
+        input_schema=nothing,
     )
 
     - id::String
@@ -17,6 +18,7 @@
     - description::String : Brief summary of what the agent does
     - state::String : The current state of the agent
     - trigger_type::String : Specifies how the agent is activated
+    - input_schema::Any : Draft-07 JSON-Schema describing the structure the agent expects as input when its &#x60;run&#x60; endpoint is invoked. Omitted when the agent declares no input type. 
 """
 Base.@kwdef mutable struct AgentSummary <: OpenAPI.APIModel
     id::Union{Nothing, String} = nothing
@@ -24,18 +26,20 @@ Base.@kwdef mutable struct AgentSummary <: OpenAPI.APIModel
     description::Union{Nothing, String} = nothing
     state::Union{Nothing, String} = nothing
     trigger_type::Union{Nothing, String} = nothing
+    input_schema::Union{Nothing, Any} = nothing
 
-    function AgentSummary(id, name, description, state, trigger_type, )
+    function AgentSummary(id, name, description, state, trigger_type, input_schema, )
         OpenAPI.validate_property(AgentSummary, Symbol("id"), id)
         OpenAPI.validate_property(AgentSummary, Symbol("name"), name)
         OpenAPI.validate_property(AgentSummary, Symbol("description"), description)
         OpenAPI.validate_property(AgentSummary, Symbol("state"), state)
         OpenAPI.validate_property(AgentSummary, Symbol("trigger_type"), trigger_type)
-        return new(id, name, description, state, trigger_type, )
+        OpenAPI.validate_property(AgentSummary, Symbol("input_schema"), input_schema)
+        return new(id, name, description, state, trigger_type, input_schema, )
     end
 end # type AgentSummary
 
-const _property_types_AgentSummary = Dict{Symbol,String}(Symbol("id")=>"String", Symbol("name")=>"String", Symbol("description")=>"String", Symbol("state")=>"String", Symbol("trigger_type")=>"String", )
+const _property_types_AgentSummary = Dict{Symbol,String}(Symbol("id")=>"String", Symbol("name")=>"String", Symbol("description")=>"String", Symbol("state")=>"String", Symbol("trigger_type")=>"String", Symbol("input_schema")=>"Any", )
 OpenAPI.property_type(::Type{ AgentSummary }, name::Symbol) = Union{Nothing,eval(Base.Meta.parse(_property_types_AgentSummary[name]))}
 
 function check_required(o::AgentSummary)

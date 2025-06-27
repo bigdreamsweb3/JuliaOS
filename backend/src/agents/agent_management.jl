@@ -88,7 +88,15 @@ function run(
     end
 
     @info "Executing strategy of agent $(agent.id)"
-    return agent.strategy.run(agent.strategy.config, agent.context, input)
+    strat = agent.strategy
+    if strat.input_type === nothing
+        return strat.run(strat.config, agent.context, input)
+    else
+        input_obj = isa(input, Dict) ?
+                     deserialize_object(strat.input_type, input) :
+                     error("run() for $(agent.id) expects JSON object matching $(strat.input_type)")
+        return strat.run(strat.config, agent.context, input_obj)
+    end
 end
 
 function initialize(
