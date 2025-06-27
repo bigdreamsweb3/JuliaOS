@@ -5,7 +5,7 @@ using Gumbo, Cascadia, HTTP
 Base.@kwdef struct ToolScrapeArticleConfig <: ToolConfig
 end
 
-function extract_article_text(html::String)
+function extract_article_text(html::String)::String
     parsed = parsehtml(html)
     body = parsed.root
 
@@ -15,7 +15,7 @@ function extract_article_text(html::String)
     return join(texts, "\n\n")
 end
 
-function tool_scrape_article_text(cfg::ToolScrapeArticleConfig, task::Dict)
+function tool_scrape_article_text(cfg::ToolScrapeArticleConfig, task::Dict)::Dict{String,Any}
     if !haskey(task, "url")
         return Dict("success" => false, "error" => "Missing url")
     end

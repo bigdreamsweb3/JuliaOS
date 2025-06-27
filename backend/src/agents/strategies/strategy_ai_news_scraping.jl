@@ -2,13 +2,23 @@ using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification
 using Gumbo, Cascadia, HTTP
 
 
+"""
+    StrategyAINewsAgentConfig
+
+Configuration for the AI news scraping strategy. 
+    
+# Fields
+- `news_portal_url::String`: The URL of the news portal to scrape articles from.
+- `css_selector::String`: A CSS selector to find article links (e.g. `"a[href]"`).
+- `url_pattern::Union{Nothing, String}`: A regex pattern to match valid article URLs (e.g. date-based `/2025/01/01/`).
+"""
 Base.@kwdef struct StrategyAINewsAgentConfig <: StrategyConfig
     news_portal_url::String = "https://techcrunch.com/category/artificial-intelligence/"
     css_selector::String = "a[href]"
     url_pattern::Union{Nothing, String} = "/\\d{4}/\\d{2}/\\d{2}/"
 end
 
-function extract_latest_article_url(html::String, css_selector::String, url_pattern::Union{Nothing, String})
+function extract_latest_article_url(html::String, css_selector::String, url_pattern::Union{Nothing, String})::Union{String, Nothing}
     parsed = parsehtml(html)
     nodes = eachmatch(Selector(css_selector), parsed.root)
 
@@ -26,7 +36,7 @@ function extract_latest_article_url(html::String, css_selector::String, url_patt
     return nothing
 end
 
-function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentContext, input::Dict{String,Any})
+function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentContext, input::Dict{String,Any})::AgentContext
     scrape_index = findfirst(t -> t.metadata.name == "scrape_article_text", ctx.tools)
     summarize_index = findfirst(t -> t.metadata.name == "summarize_for_post", ctx.tools)
 
@@ -45,7 +55,6 @@ function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentCon
     end
 
     article_url = extract_latest_article_url(portal_html, cfg.css_selector, cfg.url_pattern)
-
     if article_url === nothing
         push!(ctx.logs, "No matching article URL found on portal")
         return ctx

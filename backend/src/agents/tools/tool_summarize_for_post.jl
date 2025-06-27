@@ -12,7 +12,7 @@ Base.@kwdef struct ToolSummarizeConfig <: ToolConfig
     model_name::String = GEMINI_MODEL
 end
 
-function tool_summarize_for_post(cfg::ToolSummarizeConfig, task::Dict)
+function tool_summarize_for_post(cfg::ToolSummarizeConfig, task::Dict)::Dict{String,Any}
     if !haskey(task, "text")
         return Dict("success" => false, "error" => "Missing article text")
     end
