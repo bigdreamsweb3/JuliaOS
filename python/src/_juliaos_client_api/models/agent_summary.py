@@ -30,7 +30,7 @@ class AgentSummary(BaseModel):
     description: StrictStr = Field(default=..., description="Brief summary of what the agent does")
     state: StrictStr = Field(default=..., description="The current state of the agent")
     trigger_type: StrictStr = Field(default=..., description="Specifies how the agent is activated")
-    input_schema: Optional[Dict[str, Any]] = Field(default=None, description="Draft-07 JSON-Schema describing the structure the agent expects as input when its `run` endpoint is invoked. Omitted when the agent declares no input type. ")
+    input_schema: Optional[Dict[str, Any]] = Field(default=None, description="JSON-Schema describing the structure the agent expects as input when its `run` endpoint is invoked. Omitted when the agent declares no input type. ")
     __properties = ["id", "name", "description", "state", "trigger_type", "input_schema"]
 
     @validator('state')

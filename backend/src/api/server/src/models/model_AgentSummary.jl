@@ -18,7 +18,7 @@
     - description::String : Brief summary of what the agent does
     - state::String : The current state of the agent
     - trigger_type::String : Specifies how the agent is activated
-    - input_schema::Any : Draft-07 JSON-Schema describing the structure the agent expects as input when its &#x60;run&#x60; endpoint is invoked. Omitted when the agent declares no input type. 
+    - input_schema::Any : JSON-Schema describing the structure the agent expects as input when its &#x60;run&#x60; endpoint is invoked. Omitted when the agent declares no input type. 
 """
 Base.@kwdef mutable struct AgentSummary <: OpenAPI.APIModel
     id::Union{Nothing, String} = nothing

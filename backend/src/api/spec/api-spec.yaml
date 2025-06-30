@@ -254,7 +254,7 @@ components:
         input_schema:
           type: object
           description: >
-            Draft-07 JSON-Schema describing the structure the agent expects as
+            JSON-Schema describing the structure the agent expects as
             input when its `run` endpoint is invoked. Omitted when the agent
             declares no input type.
           example:
