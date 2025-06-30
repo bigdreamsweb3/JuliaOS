@@ -10,6 +10,8 @@ include("tool_post_to_x.jl")
 include("telegram/tool_ban_user.jl")
 include("telegram/tool_detect_swearing.jl")
 include("telegram/tool_send_message.jl")
+include("tool_scrape_article_text.jl")
+include("tool_summarize_for_post.jl")
 
 using ..CommonTypes: ToolSpecification
 
@@ -32,5 +34,8 @@ register_tool("ping", TOOL_PING_SPECIFICATION)
 register_tool("ban_user", TOOL_BAN_USER_SPECIFICATION)
 register_tool("detect_swearing", TOOL_DETECT_SWEAR_SPECIFICATION)
 register_tool("send_message", TOOL_SEND_MESSAGE_SPECIFICATION)
+register_tool("scrape_article_text", TOOL_SCRAPE_ARTICLE_TEXT_SPECIFICATION)
+register_tool("summarize_for_post", TOOL_SUMMARIZE_FOR_POST_SPECIFICATION)
+
 
 end
