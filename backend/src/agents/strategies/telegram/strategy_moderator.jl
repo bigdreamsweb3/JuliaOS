@@ -1,4 +1,5 @@
 using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification
+using ...Resources: Telegram
 using HTTP
 using JSON
 
@@ -6,26 +7,20 @@ using JSON
 Base.@kwdef struct StrategyTelegramModeratorConfig <: StrategyConfig
 end
 
+Base.@kwdef struct ModeratorInput <: StrategyInput
+    message::Telegram.Message
+end
+
 function strategy_telegram_moderator(
         cfg::StrategyTelegramModeratorConfig,
         ctx::AgentContext,
-        input::Dict{String,Any}
+        input::ModeratorInput
     )
-    if !haskey(input, "message") || !(input["message"] isa Dict{String,Any})
-        push!(ctx.logs, "ERROR: payload missing “message” or it’s not a Dict")
-        return ctx
-    end
 
     msg = input["message"]::Dict{String,Any}
-    if !(haskey(msg, "chat") && haskey(msg["chat"], "id") &&
-         haskey(msg["from"], "id") && haskey(msg, "text"))
-        push!(ctx.logs, "ERROR: Message JSON missing chat/id/from/text.")
-        return ctx
-    end
-
     chat_id = msg["chat"]["id"]
     user_id = msg["from"]["id"]
-    text    = msg["text"]
+    text = msg["text"]
 
     detect_index = findfirst(tool -> tool.metadata.name == "detect_swearing", ctx.tools)
     if detect_index === nothing
@@ -80,5 +75,6 @@ end
 const STRATEGY_TELEGRAM_MODERATOR_SPECIFICATION = StrategySpecification(
     strategy_telegram_moderator,
     nothing,
-    StrategyTelegramModeratorConfig
+    StrategyTelegramModeratorConfig,
+    ModeratorInput
 )

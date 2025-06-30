@@ -3,10 +3,17 @@ using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification
 Base.@kwdef struct StrategyBlogWriterConfig <: StrategyConfig
 end
 
+Base.@kwdef struct BloggerInput <: StrategyInput
+    title::String
+    tone::String
+    max_characters_amount::Int
+    output_format::String
+end
+
 function strategy_blogger(
         cfg::StrategyBlogWriterConfig,
         ctx::AgentContext,
-        input::Dict{String,Any}
+        input::BloggerInput
     )
     if !haskey(input, "title")
         push!(ctx.logs, "ERROR: Input must contain 'title'.")
@@ -61,5 +68,6 @@ end
 const STRATEGY_BLOG_WRITER_SPECIFICATION = StrategySpecification(
     strategy_blogger,
     nothing,
-    StrategyBlogWriterConfig
+    StrategyBlogWriterConfig,
+    BloggerInput
 )

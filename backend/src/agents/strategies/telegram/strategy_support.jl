@@ -1,4 +1,5 @@
 using ..CommonTypes: StrategyConfig, AgentContext
+using ...Resources: Telegram
 using HTTP
 using JSON
 
@@ -6,6 +7,10 @@ using JSON
 Base.@kwdef struct StrategySupportConfig <: StrategyConfig
     name::String
     api_token::String
+end
+
+Base.@kwdef struct SupportInput <: StrategyInput
+    message::Telegram.Message
 end
 
 function strategy_support_initialization(
@@ -44,20 +49,9 @@ end
 function strategy_support(
         cfg::StrategySupportConfig,
         ctx::AgentContext,
-        input::Dict{String,Any}
+        input::SupportInput
     )
-    if !haskey(input, "message") || !(input["message"] isa Dict{String,Any})
-        push!(ctx.logs, "ERROR: payload missing “message” or it’s not a Dict")
-        return
-    end
-
-    msg = input["message"]::Dict{String,Any}
-    if !(haskey(msg, "chat") && haskey(msg["chat"], "id") &&
-         haskey(msg["from"], "id") && haskey(msg, "text"))
-        push!(ctx.logs, "ERROR: Message JSON missing chat/id/from/text.")
-        return
-    end
-
+    msg = input["message"]::Message
     chat_id = msg["chat"]["id"]
     user_id = msg["from"]["id"]
     text    = msg["text"]
@@ -105,5 +99,6 @@ end
 const STRATEGY_SUPPORT_SPECIFICATION = StrategySpecification(
     strategy_support,
     strategy_support_initialization,
-    StrategySupportConfig
+    StrategySupportConfig,
+    SupportInput
 )
