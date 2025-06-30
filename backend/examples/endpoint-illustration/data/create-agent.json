@@ -19,7 +19,7 @@
 		},
 		"trigger": {
 			"type" : "webhook",
-			"config": {}
+			"params": {}
 		}
 	}
 }

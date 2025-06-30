@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyInput
 
 Base.@kwdef struct StrategyBlogWriterConfig <: StrategyConfig
 end

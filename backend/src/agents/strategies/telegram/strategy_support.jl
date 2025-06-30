@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext
+using ..CommonTypes: StrategyConfig, AgentContext, StrategyInput
 using ...Resources: Telegram
 using HTTP
 using JSON
@@ -51,10 +51,9 @@ function strategy_support(
         ctx::AgentContext,
         input::SupportInput
     )
-    msg = input["message"]::Message
-    chat_id = msg["chat"]["id"]
-    user_id = msg["from"]["id"]
-    text    = msg["text"]
+    chat_id = input.message.chat.id
+    user_id = input.message.from.id
+    text = input.message.text
 
     llm_chat_index = findfirst(tool -> tool.metadata.name == "llm_chat", ctx.tools)
     if llm_chat_index === nothing

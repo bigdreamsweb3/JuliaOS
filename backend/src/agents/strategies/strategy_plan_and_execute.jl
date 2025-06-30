@@ -1,5 +1,5 @@
 using ...Resources: Gemini
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, InstantiatedTool
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, InstantiatedTool, StrategyInput
 import Dates: DateTime, now
 using Random
 using JSON3

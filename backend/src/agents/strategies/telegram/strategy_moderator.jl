@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyInput
 using ...Resources: Telegram
 using HTTP
 using JSON
@@ -16,11 +16,9 @@ function strategy_telegram_moderator(
         ctx::AgentContext,
         input::ModeratorInput
     )
-
-    msg = input["message"]::Dict{String,Any}
-    chat_id = msg["chat"]["id"]
-    user_id = msg["from"]["id"]
-    text = msg["text"]
+    chat_id = input.message.chat.id
+    user_id = input.message.from.id
+    text = input.message.text
 
     detect_index = findfirst(tool -> tool.metadata.name == "detect_swearing", ctx.tools)
     if detect_index === nothing
