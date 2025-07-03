@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyMetadata
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyMetadata, StrategyInput
 using Gumbo, Cascadia, HTTP
 
 
@@ -16,6 +16,9 @@ Base.@kwdef struct StrategyAINewsAgentConfig <: StrategyConfig
     news_portal_url::String = "https://techcrunch.com/category/artificial-intelligence/"
     css_selector::String = "a[href]"
     url_pattern::Union{Nothing, String} = "/\\d{4}/\\d{2}/\\d{2}/"
+end
+
+Base.@kwdef struct AINewsAgentInput <: StrategyInput
 end
 
 function extract_latest_article_url(html::String, css_selector::String, url_pattern::Union{Nothing, String})::Union{String, Nothing}
@@ -36,7 +39,7 @@ function extract_latest_article_url(html::String, css_selector::String, url_patt
     return nothing
 end
 
-function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentContext, input::Dict{String,Any})::AgentContext
+function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentContext, input::AINewsAgentInput)::AgentContext
     scrape_index = findfirst(t -> t.metadata.name == "scrape_article_text", ctx.tools)
     summarize_index = findfirst(t -> t.metadata.name == "summarize_for_post", ctx.tools)
     post_to_x_index = findfirst(t -> t.metadata.name == "post_to_x", ctx.tools)
@@ -108,5 +111,6 @@ const STRATEGY_AI_NEWS_SCRAPING_SPECIFICATION = StrategySpecification(
     strategy_ai_news_scraping,
     nothing,
     StrategyAINewsAgentConfig,
-    STRATEGY_AI_NEWS_SCRAPING_METADATA
+    STRATEGY_AI_NEWS_SCRAPING_METADATA,
+    AINewsAgentInput
 )

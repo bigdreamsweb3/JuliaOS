@@ -77,6 +77,7 @@ function get_agent(req::HTTP.Request, agent_id::String;)::HTTP.Response
     agent = get(Agents.AGENTS, agent_id) do
         error("Agent $(agent_id) does not exist!")
     end
+
     agent_summary = summarize(agent)
     return HTTP.Response(200, agent_summary)
 end

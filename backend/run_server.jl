@@ -9,7 +9,7 @@ using JuliaOSBackend.JuliaDB
 
 function main()
     @info "Initializing DB connection..."
-    db_host = "localhost"
+    db_host = get(ENV, "DB_HOST", "localhost")
     db_port = parse(Int, get(ENV, "DB_PORT", "5435"))
     db_name = get(ENV, "DB_NAME", "postgres")
     db_user = get(ENV, "DB_USER", "postgres")

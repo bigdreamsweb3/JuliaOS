@@ -53,7 +53,7 @@ function main()
     Agents.set_agent_state(moderator_agent, Agents.CommonTypes.RUNNING_STATE)
     @info "telegram_moderator_agent is now RUNNING"
 
-    sample_payload_bad = Dict{String, Any}(
+    sample_payload_bad = Dict(
         "message" => Dict(
             "from"       => Dict("id" => 1),
             "chat"       => Dict("id" => 1),
@@ -61,7 +61,7 @@ function main()
         )
     )
 
-    sample_payload_clean = Dict{String, Any}(
+    sample_payload_clean = Dict(
         "message" => Dict(
             "from"       => Dict("id" => 2),
             "chat"       => Dict("id" => 1),

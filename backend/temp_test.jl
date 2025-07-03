@@ -37,13 +37,6 @@ function main()
     end
 
     Agents.set_agent_state(example_agent, Agents.CommonTypes.RUNNING_STATE)
-    
-    Agents.run(example_agent)
-
-    @info "Agent logs:"
-    for log in example_agent.context.logs
-        @info " - $log"
-    end
 
     Agents.run(example_agent, Dict("value" => 7))
 

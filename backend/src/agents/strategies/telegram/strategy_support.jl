@@ -1,4 +1,5 @@
-using ..CommonTypes: StrategyConfig, AgentContext, StrategyMetadata
+using ..CommonTypes: StrategyConfig, AgentContext, StrategyMetadata, StrategyInput
+using ...Resources: Telegram
 using HTTP
 using JSON
 
@@ -6,6 +7,10 @@ using JSON
 Base.@kwdef struct StrategySupportConfig <: StrategyConfig
     name::String
     api_token::String
+end
+
+Base.@kwdef struct SupportInput <: StrategyInput
+    message::Telegram.Message
 end
 
 function strategy_support_initialization(
@@ -44,23 +49,11 @@ end
 function strategy_support(
         cfg::StrategySupportConfig,
         ctx::AgentContext,
-        input::Dict{String,Any}
+        input::SupportInput
     )
-    if !haskey(input, "message") || !(input["message"] isa Dict{String,Any})
-        push!(ctx.logs, "ERROR: payload missing “message” or it’s not a Dict")
-        return
-    end
-
-    msg = input["message"]::Dict{String,Any}
-    if !(haskey(msg, "chat") && haskey(msg["chat"], "id") &&
-         haskey(msg["from"], "id") && haskey(msg, "text"))
-        push!(ctx.logs, "ERROR: Message JSON missing chat/id/from/text.")
-        return
-    end
-
-    chat_id = msg["chat"]["id"]
-    user_id = msg["from"]["id"]
-    text    = msg["text"]
+    chat_id = input.message.chat.id
+    user_id = input.message.from.id
+    text = input.message.text
 
     llm_chat_index = findfirst(tool -> tool.metadata.name == "llm_chat", ctx.tools)
     if llm_chat_index === nothing
@@ -110,5 +103,6 @@ const STRATEGY_TELEGRAM_SUPPORT_SPECIFICATION = StrategySpecification(
     strategy_support,
     strategy_support_initialization,
     StrategySupportConfig,
-    STRATEGY_TELEGRAM_SUPPORT_METADATA
+    STRATEGY_TELEGRAM_SUPPORT_METADATA,
+    SupportInput
 )

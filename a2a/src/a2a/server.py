@@ -6,15 +6,12 @@ from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 
-from agents import register_all_agents
-from agents.registry import get_executor
 from agents.card import make_agent_card
+from agents.executors import GenericExecutor
 
 import juliaos
 
 PORT = 9100
-
-register_all_agents()
 
 conn = juliaos.JuliaOSConnection("http://127.0.0.1:8052/api/v1")
 agents = conn.list_agents()
@@ -26,7 +23,7 @@ for agent in agents:
 
     agent_id = agent.id
     handler = DefaultRequestHandler(
-        agent_executor=get_executor(agent_id),
+        agent_executor=GenericExecutor(agent.id),
         task_store=InMemoryTaskStore()
     )
     a2a_subapp = A2AStarletteApplication(

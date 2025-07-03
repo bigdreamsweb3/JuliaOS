@@ -1,4 +1,5 @@
 using .CommonTypes: InstantiatedTool, InstantiatedStrategy, StrategyBlueprint, ToolBlueprint, AgentState, TriggerType
+using JSONSchemaGenerator
 
 function deserialize_object(object_type::DataType, data::Dict{String, Any})
     expected_fields = fieldnames(object_type)
@@ -41,7 +42,7 @@ function instantiate_strategy(blueprint::StrategyBlueprint)::InstantiatedStrateg
 
     strategy_config = deserialize_object(strategy_spec.config_type, blueprint.config_data)
 
-    return InstantiatedStrategy(strategy_spec.run, strategy_spec.initialize, strategy_config, strategy_spec.metadata)
+    return InstantiatedStrategy(strategy_spec.run, strategy_spec.initialize, strategy_config, strategy_spec.metadata, strategy_spec.input_type)
 end
 
 const AGENT_STATE_NAMES = Dict(
@@ -74,6 +75,15 @@ function trigger_type_to_string(trigger::TriggerType)::String
     return get(TRIGGER_TYPE_NAMES, trigger) do
         error("Unknown TriggerType: $trigger")
     end
+end
+
+"""
+    input_schema_json(agent) -> String
+
+Same, but as a compact JSON string.
+"""
+function input_type_json(agent::CommonTypes.Agent)
+    isnothing(agent.strategy.input_type) ? "" : JSONSchemaGenerator.schema(agent.strategy.input_type)
 end
 
 const NAME_TO_TRIGGER_TYPE = Dict(v => k for (k, v) in TRIGGER_TYPE_NAMES)
