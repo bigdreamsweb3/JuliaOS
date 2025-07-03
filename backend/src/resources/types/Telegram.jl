@@ -4,10 +4,10 @@ struct Chat
     id::String
 end
 
-function Chat(data::Dict{String, Any})
+function Chat(data::AbstractDict{<:AbstractString,<:Any})
     return Chat(string(data["id"]))
 end
-Base.convert(::Type{Chat}, data::Dict{String, Any}) = Chat(data)
+Base.convert(::Type{Chat}, data::AbstractDict{<:AbstractString,<:Any}) = Chat(data)
 
 struct Message
     chat::Chat
@@ -15,13 +15,13 @@ struct Message
     text::String
 end
 
-function Message(data::Dict{String, Any})
+function Message(data::AbstractDict{<:AbstractString,<:Any})
     return Message(
         Chat(data["chat"]),
         Chat(data["from"]),
         data["text"]
     )
 end
-Base.convert(::Type{Message}, data::Dict{String, Any}) = Message(data)
+Base.convert(::Type{Message}, data::AbstractDict{<:AbstractString,<:Any}) = Message(data)
 
 end

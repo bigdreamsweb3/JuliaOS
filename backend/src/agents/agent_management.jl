@@ -92,9 +92,12 @@ function run(
     if strat.input_type === nothing
         return strat.run(strat.config, agent.context, input)
     else
-        input_obj = isa(input, Dict) ?
-                     deserialize_object(strat.input_type, input) :
-                     error("run() for $(agent.id) expects JSON object matching $(strat.input_type)")
+        if isa(input, AbstractDict)
+            input_any = Dict{String, Any}(input)
+            input_obj = deserialize_object(strat.input_type, input_any)
+        else
+            error("run() for $(agent.id) expects JSON object matching $(strat.input_type)")
+        end
         return strat.run(strat.config, agent.context, input_obj)
     end
 end

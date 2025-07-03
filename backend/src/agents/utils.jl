@@ -78,27 +78,6 @@ function trigger_type_to_string(trigger::TriggerType)::String
 end
 
 """
-    deserialize_object(::Type{T}, data) where {T}
-
-Turn a JSON-style Dict into an instance of `T`.  Accept *any* value type.
-"""
-function deserialize_object(::Type{T},
-                            data::AbstractDict{<:AbstractString,<:Any}) where T
-    expected  = fieldnames(T)
-    provided  = Symbol.(keys(data))
-
-    unexpected = setdiff(provided, expected)
-    missing    = setdiff(expected, provided)
-
-    if !isempty(missing);    @warn "Missing fields in data: $missing"; end
-    if !isempty(unexpected); @warn "Unexpected fields in data: $unexpected"; end
-
-    # convert String keys ➜ Symbol keys, preserving values of ANY type
-    symbolic_data = Dict(Symbol(k) => v for (k,v) in data)
-    return T(; symbolic_data...)
-end
-
-"""
     input_schema_json(agent) -> String
 
 Same, but as a compact JSON string.
