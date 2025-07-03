@@ -1,3 +1,4 @@
+import json
 from a2a.types import AgentCard, AgentSkill, AgentCapabilities
 from juliaos import Agent
 
@@ -17,9 +18,10 @@ def make_agent_card(agent: Agent, port: int) -> AgentCard:
                 id=agent_id,
                 name=name,
                 description=description,
+                examples=[json.dumps(agent.input_schema)] if agent.input_schema else [],
                 tags=[]
             )
         ],
-        defaultInputModes=["text/plain"],
+        defaultInputModes=["application/json"],
         defaultOutputModes=["text/plain"],
     )

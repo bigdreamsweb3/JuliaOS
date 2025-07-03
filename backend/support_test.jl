@@ -33,7 +33,7 @@ function main()
     strategy_config = Dict("name" => "support_agent", "api_token" => telegram_token)
     support_blueprint = AgentBlueprint(
         tool_blueprints,
-        StrategyBlueprint("support", strategy_config),
+        StrategyBlueprint("telegram_support", strategy_config),
         TriggerConfig(Agents.CommonTypes.WEBHOOK_TRIGGER, WebhookTriggerParams())
     )
 
@@ -48,11 +48,11 @@ function main()
     Agents.set_agent_state(support_agent, Agents.CommonTypes.RUNNING_STATE)
     @info "support_agent is now RUNNING"
 
-    payload = Dict{String, Any}(
+    payload = Dict(
         "message" => Dict(
-            "from"       => Dict("id" => 340743403),
-            "chat"       => Dict("id" => 340743403),
-            "text"       => "Hello! How are you?"
+            "from" => Dict("id" => 340743403),
+            "chat" => Dict("id" => 340743403),
+            "text" => "Hello! How are you?"
         )
     )
 

@@ -1,5 +1,7 @@
 module CommonTypes
 
+using StructTypes
+
 # Tools:
 
 abstract type ToolConfig end
@@ -52,16 +54,27 @@ end
 
 abstract type StrategyConfig end
 
+struct StrategyMetadata
+    name::String
+end
+
+abstract type StrategyInput end
+StructTypes.StructType(::Type{T}) where {T<:StrategyInput} = StructTypes.Struct()
+
 struct StrategySpecification
     run::Function
     initialize::Union{Nothing, Function}
     config_type::DataType
+    metadata::StrategyMetadata
+    input_type::Union{DataType,Nothing}
 end
 
 struct InstantiatedStrategy
     run::Function
     initialize::Union{Nothing, Function}
     config::StrategyConfig
+    metadata::StrategyMetadata
+    input_type::Union{DataType,Nothing}
 end
 
 # Blueprints:

@@ -2,6 +2,15 @@ using .CommonTypes: Agent, AgentBlueprint, AgentContext, AgentState, Instantiate
 
 const AGENTS = Dict{String, Agent}()
 
+function register_agent(agent::Agent)
+    agent_id = agent.id
+    if haskey(AGENTS, agent_id)
+        error("Agent with ID '$agent_id' already exists.")
+    end
+
+    AGENTS[agent_id] = agent
+end
+
 function create_agent(
     id::String,
     name::String,
@@ -40,9 +49,7 @@ function create_agent(
         CommonTypes.CREATED_STATE
     )
 
-    AGENTS[id] = agent
-
-    initialize(agent)
+    register_agent(agent)
 
     return agent
 end
@@ -88,7 +95,18 @@ function run(
     end
 
     @info "Executing strategy of agent $(agent.id)"
-    return agent.strategy.run(agent.strategy.config, agent.context, input)
+    strat = agent.strategy
+    if strat.input_type === nothing
+        return strat.run(strat.config, agent.context, input)
+    else
+        if isa(input, AbstractDict)
+            input_any = Dict{String, Any}(input)
+            input_obj = deserialize_object(strat.input_type, input_any)
+        else
+            error("run() for $(agent.id) expects JSON object matching $(strat.input_type)")
+        end
+        return strat.run(strat.config, agent.context, input_obj)
+    end
 end
 
 function initialize(

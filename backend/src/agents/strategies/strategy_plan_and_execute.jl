@@ -1,5 +1,5 @@
 using ...Resources: Gemini
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, InstantiatedTool
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, InstantiatedTool, StrategyMetadata, StrategyInput
 import Dates: DateTime, now
 using Random
 using JSON3
@@ -13,6 +13,10 @@ Base.@kwdef struct StrategyPlanAndExecuteConfig <: StrategyConfig
     model_name::String = GEMINI_MODEL
     temperature::Float64 = 0.7
     max_output_tokens::Int = 1024
+end
+
+Base.@kwdef struct PlanAndExecuteInput <: StrategyInput
+    text::String
 end
 
 # ----------------------------------------------------------------------
@@ -372,17 +376,13 @@ Main plan-and-execute function, includes planning, step execution, and final sum
 # Returns
 - Updated AgentContext with logs and final result.
 """
-function strategy_plan_and_execute(cfg::StrategyPlanAndExecuteConfig, ctx::AgentContext, input::Dict{String,Any})::AgentContext
+function strategy_plan_and_execute(cfg::StrategyPlanAndExecuteConfig, ctx::AgentContext, input::PlanAndExecuteInput)::AgentContext
     gemini_cfg = make_gemini_config(cfg)
-    if !haskey(input, "task") || !(input["task"] isa String)
-        push!(ctx.logs, "ERROR: Input must be a Dict with a string 'task' field.")
-        return ctx
-    end
-    input_str = get(input, "task", "")
+    text = input.text
     
     # Logging: Plan creation
-    push!(ctx.logs, "Creating plan for input: $(input_str)")
-    plan = create_plan(cfg, ctx, input_str)
+    push!(ctx.logs, "Creating plan for input: $(text)")
+    plan = create_plan(cfg, ctx, text)
 
     steps_count = length(plan.steps)
 
@@ -444,8 +444,14 @@ function strategy_plan_and_execute(cfg::StrategyPlanAndExecuteConfig, ctx::Agent
     return ctx
 end
 
+const STRATEGY_PLAN_AND_EXECUTE_METADATA = StrategyMetadata(
+    "plan_execute"
+)
+
 const STRATEGY_PLAN_AND_EXECUTE_SPECIFICATION = StrategySpecification(
     strategy_plan_and_execute,
     nothing,
-    StrategyPlanAndExecuteConfig
+    StrategyPlanAndExecuteConfig,
+    STRATEGY_PLAN_AND_EXECUTE_METADATA,
+    PlanAndExecuteInput
 )

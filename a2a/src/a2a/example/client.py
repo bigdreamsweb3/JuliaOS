@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 import httpx
+import json
 
 from a2a.client import A2AClient
 from a2a.types import SendMessageRequest, MessageSendParams
@@ -18,12 +19,13 @@ async def main():
         client = await A2AClient.get_client_from_agent_card_url(
             httpx_client, BASE_URL
         )
-        text_msg = {
+        payload = {"value": 5}
+        user_msg = {
             "role": "user",
-            "parts": [{"kind": "text", "text": "5"}],
+            "parts": [{"kind": "text", "text": json.dumps(payload)}],
             "messageId": uuid.uuid4().hex,
         }
-        params = MessageSendParams(message=text_msg)
+        params = MessageSendParams(message=user_msg, inputMode="text")
         request = SendMessageRequest(
             id=str(uuid.uuid4()),
             params=params
