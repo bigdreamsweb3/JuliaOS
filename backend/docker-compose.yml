@@ -36,6 +36,7 @@ services:
       JULIA_PROJECT: "@."
       HOST: "0.0.0.0"
       PORT: "8052"
+      DB_HOST: "julia-db"
     ports:
       - "8052:8052"
     restart: unless-stopped
