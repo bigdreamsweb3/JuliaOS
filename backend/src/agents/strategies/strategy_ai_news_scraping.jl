@@ -36,7 +36,7 @@ function extract_latest_article_url(html::String, css_selector::String, url_patt
     return nothing
 end
 
-function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentContext, input::Dict{String,Any})::AgentContext
+function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentContext, input::Any)::AgentContext
     scrape_index = findfirst(t -> t.metadata.name == "scrape_article_text", ctx.tools)
     summarize_index = findfirst(t -> t.metadata.name == "summarize_for_post", ctx.tools)
     post_to_x_index = findfirst(t -> t.metadata.name == "post_to_x", ctx.tools)
@@ -105,3 +105,4 @@ const STRATEGY_AI_NEWS_SCRAPING_SPECIFICATION = StrategySpecification(
     nothing,
     StrategyAINewsAgentConfig,
 )
+

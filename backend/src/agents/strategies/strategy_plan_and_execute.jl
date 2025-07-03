@@ -372,12 +372,17 @@ Main plan-and-execute function, includes planning, step execution, and final sum
 # Returns
 - Updated AgentContext with logs and final result.
 """
-function strategy_plan_and_execute(cfg::StrategyPlanAndExecuteConfig, ctx::AgentContext, input::String)::AgentContext
+function strategy_plan_and_execute(cfg::StrategyPlanAndExecuteConfig, ctx::AgentContext, input::Dict{String,Any})::AgentContext
     gemini_cfg = make_gemini_config(cfg)
+    if !haskey(input, "task") || !(input["task"] isa String)
+        push!(ctx.logs, "ERROR: Input must be a Dict with a string 'task' field.")
+        return ctx
+    end
+    input_str = get(input, "task", "")
     
     # Logging: Plan creation
-    push!(ctx.logs, "Creating plan for input: $(input)")
-    plan = create_plan(cfg, ctx, input)
+    push!(ctx.logs, "Creating plan for input: $(input_str)")
+    plan = create_plan(cfg, ctx, input_str)
 
     steps_count = length(plan.steps)
 
