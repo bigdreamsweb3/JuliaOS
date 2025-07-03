@@ -1,6 +1,7 @@
 from typing import Self
 
 from _juliaos_client_api import CreateAgentRequest, AgentBlueprint, DefaultApi, AgentSummary
+from _juliaos_client_api.exceptions import BadRequestException
 from juliaos.juliaos_connection import JuliaOSConnection
 from juliaos.enums import AgentState
 
@@ -49,5 +50,10 @@ class Agent:
         return logs
 
     def call_webhook(self, params=None):
-        response = self.conn.api.process_agent_webhook(self.id, params)
-        return response
+        try:
+            response = self.conn.api.process_agent_webhook(self.id, params)
+            return response
+        except BadRequestException as e:
+            print("Webhook call failed with 400 Bad Request.")
+            print("Details:", e.body)
+            return None
