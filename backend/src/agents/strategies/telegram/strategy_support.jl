@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext
+using ..CommonTypes: StrategyConfig, AgentContext, StrategyMetadata
 using HTTP
 using JSON
 
@@ -102,8 +102,13 @@ function strategy_support(
     end
 end
 
-const STRATEGY_SUPPORT_SPECIFICATION = StrategySpecification(
+const STRATEGY_TELEGRAM_SUPPORT_METADATA = StrategyMetadata(
+    "support"
+)
+
+const STRATEGY_TELEGRAM_SUPPORT_SPECIFICATION = StrategySpecification(
     strategy_support,
     strategy_support_initialization,
-    StrategySupportConfig
+    StrategySupportConfig,
+    STRATEGY_TELEGRAM_SUPPORT_METADATA
 )

@@ -52,16 +52,22 @@ end
 
 abstract type StrategyConfig end
 
+struct StrategyMetadata
+    name::String
+end
+
 struct StrategySpecification
     run::Function
     initialize::Union{Nothing, Function}
     config_type::DataType
+    metadata::StrategyMetadata
 end
 
 struct InstantiatedStrategy
     run::Function
     initialize::Union{Nothing, Function}
     config::StrategyConfig
+    metadata::StrategyMetadata
 end
 
 # Blueprints:

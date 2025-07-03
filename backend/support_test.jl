@@ -33,7 +33,7 @@ function main()
     strategy_config = Dict("name" => "support_agent", "api_token" => telegram_token)
     support_blueprint = AgentBlueprint(
         tool_blueprints,
-        StrategyBlueprint("support", strategy_config),
+        StrategyBlueprint("telegram_support", strategy_config),
         TriggerConfig(Agents.CommonTypes.WEBHOOK_TRIGGER, WebhookTriggerParams())
     )
 

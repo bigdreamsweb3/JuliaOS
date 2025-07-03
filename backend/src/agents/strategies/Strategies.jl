@@ -13,7 +13,8 @@ using ..CommonTypes: StrategySpecification
 
 const STRATEGY_REGISTRY = Dict{String, StrategySpecification}()
 
-function register_strategy(strategy_name::String, strategy_spec::StrategySpecification)
+function register_strategy(strategy_spec::StrategySpecification)
+    strategy_name = strategy_spec.metadata.name
     if haskey(STRATEGY_REGISTRY, strategy_name)
         error("Strategy with name '$strategy_name' is already registered.")
     end
@@ -22,11 +23,11 @@ end
 
 # All strategies to be used by agents must be registered here:
 
-register_strategy("adder", STRATEGY_EXAMPLE_ADDER_SPECIFICATION)
-register_strategy("plan_execute", STRATEGY_PLAN_AND_EXECUTE_SPECIFICATION)
-register_strategy("blogger", STRATEGY_BLOG_WRITER_SPECIFICATION)
-register_strategy("telegram_moderator", STRATEGY_TELEGRAM_MODERATOR_SPECIFICATION)
-register_strategy("support", STRATEGY_SUPPORT_SPECIFICATION)
-register_strategy("ai_news_scraping", STRATEGY_AI_NEWS_SCRAPING_SPECIFICATION)
+register_strategy(STRATEGY_EXAMPLE_ADDER_SPECIFICATION)
+register_strategy(STRATEGY_PLAN_AND_EXECUTE_SPECIFICATION)
+register_strategy(STRATEGY_BLOG_WRITER_SPECIFICATION)
+register_strategy(STRATEGY_TELEGRAM_MODERATOR_SPECIFICATION)
+register_strategy(STRATEGY_TELEGRAM_SUPPORT_SPECIFICATION)
+register_strategy(STRATEGY_AI_NEWS_SCRAPING_SPECIFICATION)
 
 end

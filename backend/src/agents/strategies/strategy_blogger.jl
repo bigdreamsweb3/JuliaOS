@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyMetadata
 
 Base.@kwdef struct StrategyBlogWriterConfig <: StrategyConfig
 end
@@ -58,8 +58,13 @@ function strategy_blogger(
     return ctx
 end
 
+const STRATEGY_BLOG_WRITER_METADATA = StrategyMetadata(
+    "blogger"
+)
+
 const STRATEGY_BLOG_WRITER_SPECIFICATION = StrategySpecification(
     strategy_blogger,
     nothing,
-    StrategyBlogWriterConfig
+    StrategyBlogWriterConfig,
+    STRATEGY_BLOG_WRITER_METADATA
 )
