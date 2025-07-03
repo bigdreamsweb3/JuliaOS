@@ -1,4 +1,5 @@
 using .CommonTypes: Agent, AgentBlueprint, AgentContext, AgentState, InstantiatedTool, InstantiatedStrategy, CommonTypes
+using ...Resources: Errors
 
 const AGENTS = Dict{String, Agent}()
 
@@ -98,15 +99,28 @@ function run(
     strat = agent.strategy
     if strat.input_type === nothing
         return strat.run(strat.config, agent.context, input)
-    else
-        if isa(input, AbstractDict)
-            input_any = Dict{String, Any}(input)
-            input_obj = deserialize_object(strat.input_type, input_any)
-        else
-            error("run() for $(agent.id) expects JSON object matching $(strat.input_type)")
-        end
-        return strat.run(strat.config, agent.context, input_obj)
     end
+
+    if !isa(input, AbstractDict)
+        throw(Errors.InvalidPayload("Expected JSON object matching $(strat.input_type)"))
+    end
+
+    input_obj = try
+        deserialize_object(strat.input_type, Dict{String,Any}(input))
+    catch e
+        if isa(e, UndefKeywordError)
+            throw(Errors.InvalidPayload(
+                "Missing field '$(e.var)' for $(strat.input_type)"))
+        elseif isa(e, ArgumentError)
+            throw(Errors.InvalidPayload(
+                "Bad value in payload: $(e.msg)"))
+        else
+            throw(Errors.InvalidPayload(
+                "Cannot convert payload to $(strat.input_type): $(e)"))
+        end
+    end
+
+    return strat.run(strat.config, agent.context, input_obj)
 end
 
 function initialize(

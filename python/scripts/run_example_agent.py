@@ -45,9 +45,8 @@ with juliaos.JuliaOSConnection(HOST) as conn:
     agent2 = juliaos.Agent.load(conn, AGENT_ID)
     print_agents()
     print_logs(agent2, "Agent logs before execution:")
-    # TODO: handle inappropriate data in the backend/
-    # agent.call_webhook({})
-    # print_logs(agent2, "Agent logs after failed execution:")
+    agent.call_webhook({})
+    print_logs(agent2, "Agent logs after failed execution:")
     agent2.call_webhook({ "value": 3 })
     print_logs(agent2, "Agent logs after successful execution:")
     agent2.delete()

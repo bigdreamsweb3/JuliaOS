@@ -1,6 +1,7 @@
 module JuliaOSV1Server
 
 using HTTP
+using JSON3
 
 include("server/src/JuliaOSServer.jl")
 include("utils.jl")
@@ -10,6 +11,7 @@ include("validation.jl")
 using .JuliaOSServer
 using ..JuliaDB
 using ..Agents: Agents, Triggers
+using ...Resources: Errors
 
 const server = Ref{Any}(nothing)
 
@@ -98,15 +100,23 @@ function process_agent_webhook(req::HTTP.Request, agent_id::String; request_body
         return HTTP.Response(404, "Agent not found")
     end
     if agent.trigger.type == Agents.CommonTypes.WEBHOOK_TRIGGER
-        @info "Triggering agent $(agent_id) by webhook"
-        if !isempty(request_body)
-            @info "Passing payload to agent $(agent_id) webhook: $(request_body)"
-            Agents.run(agent, request_body)
-        else
-            Agents.run(agent)
+        try
+            if isempty(request_body)
+                Agents.run(agent)
+            else
+                Agents.run(agent, request_body)
+            end
+            return HTTP.Response(200)
+        catch e
+            if isa(e, Errors.InvalidPayload)
+                return HTTP.Response(400,
+                    JSON3.write((error = "invalid_payload", detail = e.msg)))
+            else
+                @error "Unhandled exception in webhook" exception = (e, catch_backtrace())
+                return HTTP.Response(500, JSON3.write((error = "internal_error")))
+            end
         end
     end
-    return HTTP.Response(200)
 end
 
 function get_agent_logs(req::HTTP.Request, agent_id::String;)::Union{HTTP.Response, Dict{String, Any}}
