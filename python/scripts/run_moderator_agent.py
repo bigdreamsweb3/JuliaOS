@@ -55,6 +55,7 @@ with juliaos.JuliaOSConnection(HOST) as conn:
         existing_agent.delete()
     except Exception as e:
         print(f"No existing agent '{AGENT_ID}' found. Proceeding to create.")
+        
     print_agents()
     agent = juliaos.Agent.create(conn, AGENT_BLUEPRINT, AGENT_ID, AGENT_NAME, AGENT_DESCRIPTION)
     print_agents()

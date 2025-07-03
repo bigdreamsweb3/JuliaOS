@@ -15,15 +15,15 @@ function strategy_blogger(
         ctx::AgentContext,
         input::BloggerInput
     )
-    if !haskey(input, "title")
-        push!(ctx.logs, "ERROR: Input must contain 'title'.")
+    if isnothing(input.title) || isempty(input.title)
+        push!(ctx.logs, "ERROR: Input must contain non-empty 'title'.")
         return ctx
     end
 
-    title = get(input, "title", nothing)
-    tone = get(input, "tone", nothing)
-    max_characters_amount = get(input, "max_characters_amount", nothing)
-    output_format = get(input, "output_format", nothing)
+    title = input.title
+    tone = input.tone
+    max_characters_amount = input.max_characters_amount
+    output_format = input.output_format
 
     write_blog_index  = findfirst(tool -> tool.metadata.name == "write_blog", ctx.tools)
     if write_blog_index === nothing
@@ -35,7 +35,15 @@ function strategy_blogger(
     push!(ctx.logs, "Writing blog post with:\ntitle: $title \ntone: $tone \nmax characters amount: $max_characters_amount \noutput format: $output_format")
     post_generation_result = nothing
     try
-        post_generation_result = blog_writer_tool.execute(blog_writer_tool.config, input)
+        post_generation_result = blog_writer_tool.execute(
+            blog_writer_tool.config, 
+            Dict(
+                "title" => input.title,
+                "tone" => input.tone,
+                "output_format" => input.output_format,
+                "max_characters_amount" => input.max_characters_amount
+            )
+        )
         push!(ctx.logs, "Blog post '$title' written successfully.")
         push!(ctx.logs, "Blog content: \n$(post_generation_result["output"])")
     catch e
