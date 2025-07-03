@@ -1,6 +1,6 @@
 [project]
 name = "juliaos"
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.11"
 dependencies = [
 
@@ -19,4 +19,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["juliaos", "_juliaos_client_api"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

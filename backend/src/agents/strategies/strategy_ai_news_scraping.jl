@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyInput
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyMetadata, StrategyInput
 using Gumbo, Cascadia, HTTP
 
 
@@ -103,9 +103,14 @@ function strategy_ai_news_scraping(cfg::StrategyAINewsAgentConfig, ctx::AgentCon
     return ctx
 end
 
+const STRATEGY_AI_NEWS_SCRAPING_METADATA = StrategyMetadata(
+    "ai_news_scraping"
+)
+
 const STRATEGY_AI_NEWS_SCRAPING_SPECIFICATION = StrategySpecification(
     strategy_ai_news_scraping,
     nothing,
     StrategyAINewsAgentConfig,
+    STRATEGY_AI_NEWS_SCRAPING_METADATA,
     AINewsAgentInput
 )

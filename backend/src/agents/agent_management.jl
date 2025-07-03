@@ -2,6 +2,15 @@ using .CommonTypes: Agent, AgentBlueprint, AgentContext, AgentState, Instantiate
 
 const AGENTS = Dict{String, Agent}()
 
+function register_agent(agent::Agent)
+    agent_id = agent.id
+    if haskey(AGENTS, agent_id)
+        error("Agent with ID '$agent_id' already exists.")
+    end
+
+    AGENTS[agent_id] = agent
+end
+
 function create_agent(
     id::String,
     name::String,
@@ -40,9 +49,7 @@ function create_agent(
         CommonTypes.CREATED_STATE
     )
 
-    AGENTS[id] = agent
-
-    initialize(agent)
+    register_agent(agent)
 
     return agent
 end

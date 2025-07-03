@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyInput
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyMetadata, StrategyInput
 using ...Resources: Telegram
 using HTTP
 using JSON
@@ -70,9 +70,14 @@ function strategy_telegram_moderator(
     return ctx
 end
 
+const STRATEGY_TELEGRAM_MODERATOR_METADATA = StrategyMetadata(
+    "telegram_moderator"
+)
+
 const STRATEGY_TELEGRAM_MODERATOR_SPECIFICATION = StrategySpecification(
     strategy_telegram_moderator,
     nothing,
     StrategyTelegramModeratorConfig,
+    STRATEGY_TELEGRAM_MODERATOR_METADATA,
     ModeratorInput
 )

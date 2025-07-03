@@ -1,6 +1,6 @@
 # Example implementation of a strategy. The STRATEGY_EXAMPLE_ADDER_SPECIFICATION struct encapsulates the implementation and is the part added to the registry in Strategy.jl.
 
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyInput
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, StrategyMetadata, StrategyInput
 
 Base.@kwdef struct StrategyExampleAdderConfig <: StrategyConfig
     times_to_add::Int
@@ -41,9 +41,14 @@ function strategy_example_adder(cfg::StrategyExampleAdderConfig, ctx::AgentConte
     end
 end
 
+const STRATEGY_EXAMPLE_ADDER_METADATA = StrategyMetadata(
+    "adder"
+)
+
 const STRATEGY_EXAMPLE_ADDER_SPECIFICATION = StrategySpecification(
     strategy_example_adder,
     strategy_example_adder_initialization,
     StrategyExampleAdderConfig,
+    STRATEGY_EXAMPLE_ADDER_METADATA,
     AddNumberInput
 )

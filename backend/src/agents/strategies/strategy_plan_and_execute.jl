@@ -1,5 +1,5 @@
 using ...Resources: Gemini
-using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, InstantiatedTool, StrategyInput
+using ..CommonTypes: StrategyConfig, AgentContext, StrategySpecification, InstantiatedTool, StrategyMetadata, StrategyInput
 import Dates: DateTime, now
 using Random
 using JSON3
@@ -444,9 +444,14 @@ function strategy_plan_and_execute(cfg::StrategyPlanAndExecuteConfig, ctx::Agent
     return ctx
 end
 
+const STRATEGY_PLAN_AND_EXECUTE_METADATA = StrategyMetadata(
+    "plan_execute"
+)
+
 const STRATEGY_PLAN_AND_EXECUTE_SPECIFICATION = StrategySpecification(
     strategy_plan_and_execute,
     nothing,
     StrategyPlanAndExecuteConfig,
+    STRATEGY_PLAN_AND_EXECUTE_METADATA,
     PlanAndExecuteInput
 )

@@ -1,4 +1,4 @@
-using ..CommonTypes: StrategyConfig, AgentContext, StrategyInput
+using ..CommonTypes: StrategyConfig, AgentContext, StrategyMetadata, StrategyInput
 using ...Resources: Telegram
 using HTTP
 using JSON
@@ -95,9 +95,14 @@ function strategy_support(
     end
 end
 
-const STRATEGY_SUPPORT_SPECIFICATION = StrategySpecification(
+const STRATEGY_TELEGRAM_SUPPORT_METADATA = StrategyMetadata(
+    "support"
+)
+
+const STRATEGY_TELEGRAM_SUPPORT_SPECIFICATION = StrategySpecification(
     strategy_support,
     strategy_support_initialization,
     StrategySupportConfig,
+    STRATEGY_TELEGRAM_SUPPORT_METADATA,
     SupportInput
 )
