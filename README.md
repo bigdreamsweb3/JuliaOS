@@ -170,6 +170,36 @@ flowchart TD
     Core --> Raydium
 ```
 
+## Repository Overview
+
+The JuliaOS repository contains several interacting components organized in separate directories, which we will briefly go over before diving deeper into some of them:
+
+- `a2a/` &ndash; contains an implementation of the A2A server (which requires the JuliaOS Backend to run);
+- `backend/` &ndash; contains the most recent version of the JuliaOS Backend, realizing the agent functionality alongside an attached server and database;
+- `docs/` &ndash; contains several translations of the base README file;
+- `python/` &ndash; contains the implementation of the python `juliaos` module which can be used to write scripts interacting with the JuliaOS backend, with several such example scripts also included;
+- `config/`, `julia/`, `packages/` and `workflows/` are leftovers from an earlier state of the repository, currently deprecated, but left with the potential of being partially integrated into the current state at some point in the future.
+
+### The JuliaOS Backend
+
+In the `backend/` subdirectory, you can find the core of the agent framework, including a database and a server providing access to the agent functionality. It also includes the OpenAPI specification of the server interface (found at `backend/src/api/spec/api-spec.yaml`) which is used to generate parts of the server as well as the python modules, and can be used to generate parts of other frontend clients as well.
+
+More specific information can be found in its README at [`backend/README.md`](./backend/README.md).
+
+### The A2A Server
+
+The A2A server can be found in the `a2a/` subdirectory, as a Python application separate which is separate from the JuliaOS Backend server, but needs it for its functionality. You can find more information about it in its README at [`a2a/README.md`](./a2a/README.md).
+
+### The Python Module
+
+The `python/` subdirectory contains the implementation of the `juliaos` Python module, which can be used to interact programatically with the JuliaOS Backend. Under `python/scripts/` you will find several example scripts to illustrate how to use the module.
+
+For more information, see its dedicated README at [`python/README.md`](./python/README.md).
+
+### Deprecated Code
+
+Across the repository, including in some of the top-level files, you may find references to files contained in some of the subdirectories described here as "deprecated" &ndash; while these parts of the codebase are not used by the current versions of the components, described in the previous sections, they are left in the repository in case some parts of them get reused later and integrated with the rest of the repository. The `julia/` subdirectory contains the julia code of a previous implementation of the JuliaOS Backend, while `packages/` provides supporting packages for this backend, generally written in other languages such as TypeScript and Python.
+
 ## 🧑‍🤝‍🧑 Community & Contribution
 
 JuliaOS is an open-source project, and we welcome contributions from the community! Whether you're a developer, a researcher, or an enthusiast in decentralized technologies, AI, and blockchain, there are many ways to get involved.
@@ -223,6 +253,36 @@ We appreciate all forms of contributions, including but not limited to:
     * Open a Pull Request (PR) against the `main` or appropriate development branch of the `Juliaoscode/JuliaOS` repository.
     * Clearly describe the changes in your PR and link to any relevant issues.
     * Be responsive to feedback and participate in the review process.
+
+### Implementing Tools and Strategies for Agents
+
+Any agent created in the JuliaOS system is guided by a single pre-selected *strategy*, which can use one or more of the provided *tools*. The implementations for these can be found in `backend/src/agents/strategies/` and `backend/src/agents/tools/`, respectively. New tools and strategies can be added by analogy with previous ones.
+
+To add a new tool:
+
+1. Create a new file with a descriptive name for it under `backend/src/agents/tools/`;
+2. In this file, define:
+    - A configuration structure for the tool (it is allowed to be empty if your tool doesn't need configurable variables),
+    - A function to realize the functionality of the tool (the interface of the function is not fixed and can be arbitrary, as the function is called directly from strategies),
+    - Metadata for the tool, including a name which needs to be different from all other implemented tools,
+    - A `ToolSpecification` structure summarizing all of the above;
+3. Register your tool in `backend/src/agents/tools/Tools.jl` by adding:
+    - An `include` line with the relative path to your new file,
+    - A call of `register_tool(X)` where `X` is your `ToolSpecification` structure.
+
+To add a new strategy:
+
+1. Create a new file with a descriptive name for it under `backend/src/agents/strategies/`;
+2. In this file, define:
+    - A configuration structure for the strategy (allowed to be empty),
+    - Optionally, a structure for the input of one strategy execution (otherwise, add `nothing` in its place in the specification),
+    - Optionally, an initialization function for the strategy, which gets executed on agent creation (otherwise, add `nothing` in its place in the specification); this function needs to take exactly two parameters, which are, in order, the configuration of the strategy, and the `AgentContext` of the executing agent,
+    - A function realizing the functionality of the strategy; this function needs to take exactly three parameters, which are, in order, the configuration of the strategy, the `AgentContext` of the executing agent, and the strategy input structure,
+    - Metadata for the strategy, including a name which needs to be different from all other implemented strategies,
+    - A `StrategySpecification` structure summarizing all of the above, using `nothing` for missing optional values;
+3. Register your strategy in `backend/src/agents/strategies/Strategies.jl` by adding:
+    - An `include` line with the relative path to your new file,
+    - A call of `register_strategy(X)` where `X` is your `StrategySpecification` structure.
 
 ### Contribution Guidelines
 
