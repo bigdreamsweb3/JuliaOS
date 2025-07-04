@@ -32,7 +32,7 @@ To run just the database, which can also be used alongside the backend running o
 docker compose up julia-db
 ```
 
-You can also set up your own postgres database outside of docker, just make sure its configuration is reflected in the `.env` file.
+You can also set up your own postgres database outside of docker, just make sure its configuration is reflected in the `.env` file. You can use the SQL script at `backend/migrations/up.sql` to set up the necessary tables.
 
 To install all the required Julia packages, run the following:
 
