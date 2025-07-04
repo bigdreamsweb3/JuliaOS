@@ -6,19 +6,14 @@ import juliaos
 
 
 load_dotenv()
+telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 HOST = "http://127.0.0.1:8052/api/v1"
-telegram_token = "<TELEGRAM_BOT_TOKEN>"
 
 AGENT_BLUEPRINT = juliaos.AgentBlueprint(
     tools=[
         juliaos.ToolBlueprint(
             name="detect_swearing",
-            config={
-                "api_key": os.getenv("GEMINI_API_KEY"),
-                "model_name": "models/gemini-1.5-pro",
-                "temperature": 0.0,
-                "max_output_tokens": 64
-            }
+            config={}
         ),
         juliaos.ToolBlueprint(
             name="ban_user",
@@ -55,7 +50,7 @@ with juliaos.JuliaOSConnection(HOST) as conn:
         existing_agent.delete()
     except Exception as e:
         print(f"No existing agent '{AGENT_ID}' found. Proceeding to create.")
-        
+
     print_agents()
     agent = juliaos.Agent.create(conn, AGENT_BLUEPRINT, AGENT_ID, AGENT_NAME, AGENT_DESCRIPTION)
     print_agents()

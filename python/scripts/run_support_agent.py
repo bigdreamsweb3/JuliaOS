@@ -6,8 +6,8 @@ import juliaos
 
 
 load_dotenv()
+telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 HOST = "http://127.0.0.1:8052/api/v1"
-telegram_token = "<TELEGRAM_BOT_TOKEN>"
 
 AGENT_BLUEPRINT = juliaos.AgentBlueprint(
     tools=[
