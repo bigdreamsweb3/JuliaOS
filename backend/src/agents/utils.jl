@@ -83,7 +83,7 @@ end
 Same, but as a compact JSON string.
 """
 function input_type_json(agent::CommonTypes.Agent)
-    isnothing(agent.strategy.input_type) ? "" : JSONSchemaGenerator.schema(agent.strategy.input_type)
+    isnothing(agent.strategy.input_type) ? Dict{String, Any}() : JSONSchemaGenerator.schema(agent.strategy.input_type)
 end
 
 const NAME_TO_TRIGGER_TYPE = Dict(v => k for (k, v) in TRIGGER_TYPE_NAMES)
