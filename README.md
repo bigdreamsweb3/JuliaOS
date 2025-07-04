@@ -45,7 +45,7 @@ JuliaOS is a comprehensive framework for building decentralized applications (DA
 
 You will need:
 - [Julia](https://julialang.org/) (version >= 1.11.4) to run the backend without Docker &ndash; see [the official installation instructions](https://julialang.org/install/). The method currently recommended is to install [juliaup](https://github.com/JuliaLang/juliaup), which you can then use to install and manage various versions of Julia;
-- [Python](https://www.python.org/) (version >= 3.11) to run scripts using the `juliaos` Python module or the A2A server &ndash; see [the downloads on the official Python website](https://www.python.org/downloads/);
+- [Python](https://www.python.org/) (version >= 3.11) to run scripts using the `juliaos` Python package or the A2A server &ndash; see [the downloads on the official Python website](https://www.python.org/downloads/);
 - [Docker](https://www.docker.com/) to easily run the database, or optionally the entire backend;
     - if you want to avoid installing docker, you will need an alternative way to set up a postgres database for the backend to function.
 
@@ -92,7 +92,7 @@ For more details, see [the backend README](./backend/README.md).
 
 ### Python Module
 
-Once you have the backend running, one way to interact with it is to directly use the server's rest API (see `backend/examples/` for some examples), however, it is much simpler to use the enclosed `juliaos` Python module.
+Once you have the backend running, one way to interact with it is to directly use the server's rest API (see `backend/examples/` for some examples), however, it is much simpler to use the enclosed `juliaos` Python package.
 
 First, from the root of the repository, navigate to the `python/` subdirectory:
 
@@ -102,17 +102,17 @@ cd python
 
 Optionally, to avoid modifying your global Python installation, set up and activate a [virtual environment](https://docs.python.org/3/library/venv.html).
 
-You can now install the module using
+You can now install the package using
 
 ```
 pip install -e .
 ```
 
-Note that this performs an editable install, meaning that any changes made to the code of the module will be reflected in any scripts using the module.
+Note that this performs an editable install, meaning that any changes made to the code of the package will be reflected in any scripts using the package.
 
 #### Running the scripts
 
-After installing the `juliaos` module as described in the previous section, you should be able to run the simpler scripts in `python/scripts/`, e.g.:
+After installing the `juliaos` package as described in the previous section, you should be able to run the simpler scripts in `python/scripts/`, e.g.:
 
 ```
 python scripts/run_example_agent.py
@@ -122,11 +122,11 @@ Note again that this requires the backend to be running.
 
 However, some of the scripts (e.g. ones interacting with X or Telegram) will also need appropriate API keys. For these you need to:
 - have an `.env` file with the necessary keys (see `.env.example`),
-- have the `dotenv` module installed (this should happen as part of the `juliaos` module installation, but you can also just do `pip install dotenv`).
+- have the `dotenv` package installed (this should happen as part of the `juliaos` package installation, but you can also just do `pip install dotenv`).
 
 You can create your own scripts based on the existing ones and run them just the same.
 
-For more details, see [the Python module README](./python/README.md)
+For more details, see [the Python package README](./python/README.md)
 
 ## Architecture Overview
 
@@ -210,12 +210,12 @@ The JuliaOS repository contains several interacting components organized in sepa
 - `backend/` &ndash; contains the most recent version of the JuliaOS Backend, realizing the agent functionality alongside an attached server and database;
     - this directory also contains the OpenAPI specification of the server API, located at `backend/src/api/spec/api-spec.yaml`;
 - `docs/` &ndash; contains several translations of the base README file;
-- `python/` &ndash; contains the implementation of the python `juliaos` module which can be used to write scripts interacting with the JuliaOS backend, with several such example scripts also included;
+- `python/` &ndash; contains the implementation of the python `juliaos` package which can be used to write scripts interacting with the JuliaOS backend, with several such example scripts also included;
 - `config/`, `julia/`, `packages/` and `workflows/` are leftovers from an earlier state of the repository, currently deprecated, but left with the potential of being partially integrated into the current state at some point in the future.
 
 ### The JuliaOS Backend
 
-In the `backend/` subdirectory, you can find the core of the agent framework, including a database and a server providing access to the agent functionality. It also includes the OpenAPI specification of the server interface (found at `backend/src/api/spec/api-spec.yaml`) which is used to generate parts of the server as well as the python modules, and can be used to generate parts of other frontend clients as well.
+In the `backend/` subdirectory, you can find the core of the agent framework, including a database and a server providing access to the agent functionality. It also includes the OpenAPI specification of the server interface (found at `backend/src/api/spec/api-spec.yaml`) which is used to generate parts of the server as well as the python package, and can be used to generate parts of other frontend clients as well.
 
 More specific information can be found in its README at [`backend/README.md`](./backend/README.md).
 
@@ -225,7 +225,7 @@ The A2A server can be found in the `a2a/` subdirectory, as a Python application 
 
 ### The Python Module
 
-The `python/` subdirectory contains the implementation of the `juliaos` Python module, which can be used to interact programatically with the JuliaOS Backend. Under `python/scripts/` you will find several example scripts to illustrate how to use the module.
+The `python/` subdirectory contains the implementation of the `juliaos` Python package, which can be used to interact programatically with the JuliaOS Backend. Under `python/scripts/` you will find several example scripts to illustrate how to use the package.
 
 For more information, see its dedicated README at [`python/README.md`](./python/README.md).
 
