@@ -371,7 +371,7 @@ Main plan-and-execute function, includes planning, step execution, and final sum
 # Arguments
 - `cfg::StrategyPlanAndExecuteConfig`: Strategy config.
 - `ctx::AgentContext`: Agent context with available tools and logging.
-- `input::String`: Original user query.
+- `input::PlanAndExecuteInput`: Struct containing the original user query (`text` field).
 
 # Returns
 - Updated AgentContext with logs and final result.

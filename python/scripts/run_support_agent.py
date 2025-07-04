@@ -1,20 +1,32 @@
+import os
+
+from dotenv import load_dotenv
+
 import juliaos
 
+
+load_dotenv()
+telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 HOST = "http://127.0.0.1:8052/api/v1"
 
 AGENT_BLUEPRINT = juliaos.AgentBlueprint(
     tools=[
         juliaos.ToolBlueprint(
-            name="adder",
+            name="llm_chat",
+            config={}
+        ),
+        juliaos.ToolBlueprint(
+            name="send_message",
             config={
-                "add_value": 2
+                "api_token": telegram_token
             }
         )
     ],
     strategy=juliaos.StrategyBlueprint(
-        name="adder",
+        name="support",
         config={
-            "times_to_add": 10
+            "name": "support-agent",
+            "api_token": telegram_token
         }
     ),
     trigger=juliaos.TriggerConfig(
@@ -23,9 +35,9 @@ AGENT_BLUEPRINT = juliaos.AgentBlueprint(
     )
 )
 
-AGENT_ID = "test-agent"
-AGENT_NAME = "Example Agent"
-AGENT_DESCRIPTION = "Adds the number multiple times"
+AGENT_ID = "support-agent"
+AGENT_NAME = "Telegram Support Agent"
+AGENT_DESCRIPTION = "Responds to user messages"
 
 with juliaos.JuliaOSConnection(HOST) as conn:
     print_agents = lambda: print("Agents:", conn.list_agents())
@@ -48,13 +60,15 @@ with juliaos.JuliaOSConnection(HOST) as conn:
     agent.set_state(juliaos.AgentState.RUNNING)
     print_agents()
 
-    # try to load the same agent again and confirm that both instances correspond to the same agent:
-    agent2 = juliaos.Agent.load(conn, AGENT_ID)
-    print_agents()
-    print_logs(agent2, "Agent logs before execution:")
-    agent.call_webhook({})
-    print_logs(agent2, "Agent logs after failed execution:")
-    agent2.call_webhook({ "value": 3 })
-    print_logs(agent2, "Agent logs after successful execution:")
-    agent2.delete()
+    print_logs(agent, "Agent logs before execution:")
+    sample_payload_clean = {
+        "message": {
+            "from": {"id": 340743403},
+            "chat": {"id": 340743403},
+            "text": "Hello! How are you?"
+        }
+    }
+    agent.call_webhook(sample_payload_clean)
+    print_logs(agent, "Agent logs after execution:")
+    agent.delete()
     print_agents()

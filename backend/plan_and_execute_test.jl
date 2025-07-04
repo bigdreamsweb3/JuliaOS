@@ -37,9 +37,11 @@ function main()
     Agents.set_agent_state(plan_execute_agent, Agents.CommonTypes.RUNNING_STATE)
     @info "plan_execute_agent is now RUNNING"
 
-    task = "First check if the system is responsive, then ask the language model what the capital of France is."
+    payload = Dict{String, Any}(
+        "task" => "First check if the system is responsive, then ask the language model what the capital of France is."
+    )
 
-    @info "Running PlanAndExecute agent with task: $task"
+    @info "Running PlanAndExecute agent with task: $payload"
     Agents.run(plan_execute_agent, task)
 
     @info "Agent logs after sample runs:"

@@ -5,17 +5,17 @@ HOST = "http://127.0.0.1:8052/api/v1"
 AGENT_BLUEPRINT = juliaos.AgentBlueprint(
     tools=[
         juliaos.ToolBlueprint(
-            name="adder",
-            config={
-                "add_value": 2
-            }
+            name="ping",
+            config={}
+        ),
+        juliaos.ToolBlueprint(
+            name="llm_chat",
+            config={}
         )
     ],
     strategy=juliaos.StrategyBlueprint(
-        name="adder",
-        config={
-            "times_to_add": 10
-        }
+        name="plan_execute",
+        config={}
     ),
     trigger=juliaos.TriggerConfig(
         type="webhook",
@@ -23,9 +23,9 @@ AGENT_BLUEPRINT = juliaos.AgentBlueprint(
     )
 )
 
-AGENT_ID = "test-agent"
-AGENT_NAME = "Example Agent"
-AGENT_DESCRIPTION = "Adds the number multiple times"
+AGENT_ID = "plan-execute-agent"
+AGENT_NAME = "Plan and Execute Agent"
+AGENT_DESCRIPTION = "Agent with reasoning capabilities"
 
 with juliaos.JuliaOSConnection(HOST) as conn:
     print_agents = lambda: print("Agents:", conn.list_agents())
@@ -48,13 +48,10 @@ with juliaos.JuliaOSConnection(HOST) as conn:
     agent.set_state(juliaos.AgentState.RUNNING)
     print_agents()
 
-    # try to load the same agent again and confirm that both instances correspond to the same agent:
-    agent2 = juliaos.Agent.load(conn, AGENT_ID)
     print_agents()
-    print_logs(agent2, "Agent logs before execution:")
-    agent.call_webhook({})
-    print_logs(agent2, "Agent logs after failed execution:")
-    agent2.call_webhook({ "value": 3 })
-    print_logs(agent2, "Agent logs after successful execution:")
-    agent2.delete()
+    print_logs(agent, "Agent logs before execution:")
+    task = "First check if the system is responsive, then ask the language model what the capital of France is."
+    agent.call_webhook({"text": task})
+    print_logs(agent, "Agent logs after successful execution:")
+    agent.delete()
     print_agents()
