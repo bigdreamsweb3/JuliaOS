@@ -16,6 +16,14 @@ pip install -e .
 
 after which you should be able to use the module inside `scripts/` simply as `import juliaos`. Any changes made to the module will be reflected automatically.
 
+If you are working in an environment which does not work well with editable installs, you can also try installing one of the earlier versions from TestPyPI:
+
+```
+pip install --extra-index-url https://test.pypi.org/simple/ juliaos==0.1.1
+```
+
+Note that this will only install that specific version, any changes to the module made locally will **not** be reflected.
+
 ### Example Scripts
 
 You can find several examples of how to use the module in the scripts inside `scripts/`. Note that for some of them (the ones interacting with Telegram and X), you will need to set up an `.env` file with the necessary tokens &ndash; use `.env.example` as a guidline for which environmental variables are used.
