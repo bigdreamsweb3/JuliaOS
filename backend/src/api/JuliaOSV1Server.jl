@@ -64,7 +64,10 @@ function update_agent(req::HTTP.Request, agent_id::String, agent_update::AgentUp
     @validate_model agent_update
 
     agent = get(Agents.AGENTS, agent_id) do
-        error("Agent $(agent_id) does not exist!")
+        @warn "Attempted update of non-existent agent: $(agent_id)"
+        return nothing
+    end
+    if agent == nothing
         return HTTP.Response(404, "Agent not found")
     end
     new_state = Agents.string_to_agent_state(agent_update.state)
@@ -77,7 +80,11 @@ end
 function get_agent(req::HTTP.Request, agent_id::String;)::HTTP.Response
     @info "Triggered endpoint: GET /agents/$(agent_id)"
     agent = get(Agents.AGENTS, agent_id) do
-        error("Agent $(agent_id) does not exist!")
+        @warn "Attempt to get non-existent agent: $(agent_id)"
+        return nothing
+    end
+    if agent == nothing
+        return HTTP.Response(404, "Agent not found")
     end
 
     agent_summary = summarize(agent)
@@ -96,7 +103,10 @@ end
 function process_agent_webhook(req::HTTP.Request, agent_id::String; request_body::Dict{String,Any}=Dict{String,Any}(),)::HTTP.Response
     @info "Triggered endpoint: POST /agents/$(agent_id)/webhook"
     agent = get(Agents.AGENTS, agent_id) do
-        error("Agent $(agent_id) does not exist!")
+        @warn "Attempted webhook trigger of non-existent agent: $(agent_id)"
+        return nothing
+    end
+    if agent == nothing
         return HTTP.Response(404, "Agent not found")
     end
     if agent.trigger.type == Agents.CommonTypes.WEBHOOK_TRIGGER
@@ -122,7 +132,10 @@ end
 function get_agent_logs(req::HTTP.Request, agent_id::String;)::Union{HTTP.Response, Dict{String, Any}}
     @info "Triggered endpoint: GET /agents/$(agent_id)/logs"
     agent = get(Agents.AGENTS, agent_id) do
-        error("Agent $(agent_id) does not exist!")
+        @warn "Attempt to get logs of non-existent agent: $(agent_id)"
+        return nothing
+    end
+    if agent == nothing
         return HTTP.Response(404, "Agent not found")
     end
     # TODO: implement pagination
