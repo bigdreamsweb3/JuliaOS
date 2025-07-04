@@ -43,58 +43,90 @@ JuliaOS is a comprehensive framework for building decentralized applications (DA
 
 ### Prerequisites
 
-- **Node.js**: Ensure you have Node.js installed. You can download it from [nodejs.org](https://nodejs.org/).
-- **Julia**: Ensure you have Julia installed. You can download it from [julialang.org](https://julialang.org/).
-- **Python**: Ensure you have Python installed. You can download it from [python.org](https://www.python.org/).
+You will need:
+- [Julia](https://julialang.org/) (version >= 1.11.4) to run the backend without Docker &ndash; see [the official installation instructions](https://julialang.org/install/). The method currently recommended is to install [juliaup](https://github.com/JuliaLang/juliaup), which you can then use to install and manage various versions of Julia;
+- [Python](https://www.python.org/) (version >= 3.11) to run scripts using the `juliaos` Python module or the A2A server &ndash; see [the downloads on the official Python website](https://www.python.org/downloads/);
+- [Docker](https://www.docker.com/) to easily run the database, or optionally the entire backend;
+    - if you want to avoid installing docker, you will need an alternative way to set up a postgres database for the backend to function.
 
-### Creating Agents and Swarms (TypeScript & Python)
+### JuliaOS Backend
 
-#### TypeScript (TS) Agents & Swarms
+First, navigate to the `backend/` subdirectory and prepare an `.env` file:
 
-1. **Install dependencies and build the project:**
-   ```bash
-   npm install
-   npm run build
-   ```
+```
+cd backend
+cp .env.example .env
+```
 
-2. **Create a new agent or swarm using the provided templates:**
-   - Copy and customize the template in `packages/modules/julia_templates/custom_agent_template.jl` for Julia-based agents.
-   - For TypeScript agents, use the templates in `packages/templates/agents/` (e.g., `custom_agent_template.jl`, `src/AgentsService.ts`).
+Optionally, adjust the values therein as desired. (The various API keys will not be needed unless you want to use the specific tools and strategies that use them.)
 
-3. **Configure your agent or swarm:**
-   - Edit the configuration files or pass parameters in your TypeScript code.
-   - Use the TypeScript SDK (`packages/core/src/api/ApiClient.ts`) to interact with the Julia backend, create agents, submit objectives, and manage swarms.
+#### Running the Backend with Docker
 
-4. **Run your agent or swarm:**
-   - Use the CLI or your own script to start the agent.
-   - Example (TypeScript):
-     ```typescript
-     import { ApiClient } from '@juliaos/core';
-     const client = new ApiClient();
-     // Create and run agent logic here
-     ```
+If you have [Docker](https://www.docker.com/) installed, you can now run the backend simply by running the following from the `backend/` directory:
 
-#### Python Agents & Swarms
+```
+docker compose up
+```
 
-1. **Install the Python wrapper:**
-   ```bash
-   pip install -e ./packages/pythonWrapper
-   ```
+#### Running the Backend outside of Docker
 
-2. **Create a new agent or swarm using the Python templates:**
-   - Use the templates in `packages/templates/python_templates/` (e.g., `orchestration_template.py`, `llm_integration_examples/`).
+If you want to run the backend outside of Docker, you will first need to have a postgres database for the backend running &ndash; you can either set it up yourself (see [the backend README](./backend/README.md) for more details), or run just the database using Docker as follows:
 
-3. **Configure and run your agent:**
-   - Import the Python wrapper and use the client to interact with JuliaOS.
-   - Example:
-     ```python
-     from juliaos_wrapper import client
-     api = client.JuliaOSApiClient()
-     # Create and run agent logic here
-     ```
+```
+docker compose up julia-db
+```
 
-4. **Submit objectives or manage swarms:**
-   - Use the Python API to submit objectives, create swarms, and monitor results.
+You also need to install all the required Julia packages:
+
+```
+julia --project=. -e "using Pkg; Pkg.instantiate()"
+```
+
+Once you have everything set up (the `.env` file, the database, and the installed packages), you can run the server as follows:
+
+```
+julia --project=. run_server.jl
+```
+
+For more details, see [the backend README](./backend/README.md).
+
+### Python Module
+
+Once you have the backend running, one way to interact with it is to directly use the server's rest API (see `backend/examples/` for some examples), however, it is much simpler to use the enclosed `juliaos` Python module.
+
+First, from the root of the repository, navigate to the `python/` subdirectory:
+
+```
+cd python
+```
+
+Optionally, to avoid modifying your global Python installation, set up and activate a [virtual environment](https://docs.python.org/3/library/venv.html).
+
+You can now install the module using
+
+```
+pip install -e .
+```
+
+Note that this performs an editable install, meaning that any changes made to the code of the module will be reflected in any scripts using the module.
+
+#### Running the scripts
+
+After installing the `juliaos` module as described in the previous section, you should be able to run the simpler scripts in `python/scripts/`, e.g.:
+
+```
+python scripts/run_example_agent.py
+```
+
+Note again that this requires the backend to be running.
+
+However, some of the scripts (e.g. ones interacting with X or Telegram) will also need appropriate API keys. For these you need to:
+- have an `.env` file with the necessary keys (see `.env.example`),
+- have the `dotenv` module installed (this should happen as part of the `juliaos` module installation, but you can also just do `pip install dotenv`).
+
+You can create your own scripts based on the existing ones and run them just the same.
+
+For more details, see [the Python module README](./python/README.md)
 
 ## Architecture Overview
 
@@ -176,6 +208,7 @@ The JuliaOS repository contains several interacting components organized in sepa
 
 - `a2a/` &ndash; contains an implementation of the A2A server (which requires the JuliaOS Backend to run);
 - `backend/` &ndash; contains the most recent version of the JuliaOS Backend, realizing the agent functionality alongside an attached server and database;
+    - this directory also contains the OpenAPI specification of the server API, located at `backend/src/api/spec/api-spec.yaml`;
 - `docs/` &ndash; contains several translations of the base README file;
 - `python/` &ndash; contains the implementation of the python `juliaos` module which can be used to write scripts interacting with the JuliaOS backend, with several such example scripts also included;
 - `config/`, `julia/`, `packages/` and `workflows/` are leftovers from an earlier state of the repository, currently deprecated, but left with the potential of being partially integrated into the current state at some point in the future.
