@@ -1,7 +1,7 @@
 import { ApiClient } from "@juliaos/core";
-import { ScannerAgent } from "./agents/scannerAgent";
-import { CrawlerAgent } from "./agents/crawlerAgent";
-import { VerifierAgent } from "./agents/verifierAgent";
+import { ScannerAgent } from "./helper/scannerAgent";
+import { CrawlerAgent } from "./helper/crawlerAgent";
+import { VerifierAgent } from "./helper/verifierAgent";
 
 // === Agent Metadata ===
 const agentConfig = {
