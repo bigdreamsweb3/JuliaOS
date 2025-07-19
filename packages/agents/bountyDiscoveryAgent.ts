@@ -96,9 +96,12 @@ async function run(input: any, context: any) {
         const bountyData = { url, content };
         bountyContents.push(bountyData);
 
-        // ✅ Save verified bounty to memory
-        const previous = (await context.memory.read("verifiedBounties")) || [];
-        await context.memory.write("verifiedBounties", [...previous, bountyData]);
+        // ✅ Save discovered bounty to memory (not "verifiedBounties")
+        await context.memory.store("bounty_discovery", {
+          type: "discovered_bounty",
+          source: bountyData.url,
+          content: bountyData.content,
+        });
 
         const crawlJob = await client.agents.dispatch({
           agent: CrawlerAgent,
@@ -110,7 +113,7 @@ async function run(input: any, context: any) {
           crawlResult.links.forEach((link: string) => discoveredLinks.add(link));
         }
 
-        console.log(`[✓] Bounty confirmed and stored for ${url}`);
+        console.log(`[✓] Bounty discovered and stored for ${url}`);
       } catch (err) {
         console.error(`[✗] Error in bounty discovery pipeline for ${url}:`, err);
       }
@@ -120,7 +123,7 @@ async function run(input: any, context: any) {
   // === Return both bounty contents and discovered links ===
   return {
     bounties: bountyContents,
-    discoveredLinks: [...discoveredLinks], // ← ❗ Fixed syntax
+    discoveredLinks: [...discoveredLinks],
   };
 }
 
@@ -129,4 +132,4 @@ export const BountyDiscoveryAgent = {
   config: agentConfig,
   run,
 };
-    
+        
