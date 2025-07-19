@@ -6,7 +6,38 @@ import { VerifierAgent } from "./agents/verifierAgent";
 // === Agent Metadata ===
 const agentConfig = {
   name: "BountyDiscoveryAgent",
-  description: "Scans seed URLs, verifies bounty content, and crawls further links.",
+  description:
+    "Scans URLs, scrapes content from the source, verifies bounty content, and crawls further links for crypto airdrops, bounties, and early opportunities.",
+  type: "research",
+  research_areas: [
+    "airdrops",
+    "bounties",
+    "early-stage projects",
+    "DeFi protocols",
+    "Web3 social",
+    "crypto gaming",
+  ],
+  data_sources: [
+    "web",
+    "api",
+    "on-chain data",
+    "social media",
+    "community forums",
+  ],
+  analysis_methods: [
+    "NLP",
+    "sentiment analysis",
+    "trend detection",
+    "heuristic scoring",
+    "pattern matching",
+  ],
+  output_formats: [
+    "text",
+    "json",
+    "markdown",
+    "chart",
+    "link previews",
+  ],
 };
 
 // === Helper: Wait for job result ===
@@ -89,7 +120,7 @@ async function run(input: any, context: any) {
   // === Return both bounty contents and discovered links ===
   return {
     bounties: bountyContents,
-    discoveredLinks: [...discoveredLinks],
+    discoveredLinks: [...discoveredLinks], // ← ❗ Fixed syntax
   };
 }
 
@@ -98,3 +129,4 @@ export const BountyDiscoveryAgent = {
   config: agentConfig,
   run,
 };
+    
