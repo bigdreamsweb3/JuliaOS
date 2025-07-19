@@ -1,14 +1,15 @@
 
 import { ApiClient } from "@juliaos/core";
 
-const client = new ApiClient();
-
 const agentConfig = {
   name: "ScannerAgent",
     description: "Scans provided links and scrapes visible page content for bounty-related opportunities.",
     };
 
     export async function run(input: { links: string[] }) {
+      const client = new ApiClient();
+      const agentId = await client.agents.createAgent(agentConfig);
+      
       const links = input.links || [];
         const results: { url: string; content: string }[] = [];
 
