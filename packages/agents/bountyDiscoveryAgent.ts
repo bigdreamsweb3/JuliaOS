@@ -1,5 +1,5 @@
 import { ApiClient } from "@juliaos/core";
-import { ScannerAgent } from "./helper/scannerAgent";
+import { ScannerAgent } from "./scannerAgent";
 import { CrawlerAgent } from "./helper/crawlerAgent";
 import { VerifierAgent } from "./helper/verifierAgent";
 
